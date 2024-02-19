@@ -1,5 +1,6 @@
 use rust_embed::RustEmbed;
 mod mirage;
+mod math;
 
 #[derive(RustEmbed)]
 #[folder = "assets"]

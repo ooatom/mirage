@@ -96,12 +96,10 @@ impl SimplePassObject {
             [0.5, 0.5, 0.0, 0.0, 0.0, 1.0, 1.0, 0.0],
             [0.5, -0.5, 0.0, 1.0, 1.0, 1.0, 0.0, 0.0],
         ]
-        .map(|data| {
-            simple_pass::Vertex {
-                position: [data[0], data[1], data[2]],
-                color: [data[3], data[4], data[5]],
-                uv: [data[6], data[7]],
-            }
+        .map(|data| simple_pass::Vertex {
+            position: [data[0], data[1], data[2]],
+            color: [data[3], data[4], data[5]],
+            uv: [data[6], data[7]],
         })
         .to_vec();
 
