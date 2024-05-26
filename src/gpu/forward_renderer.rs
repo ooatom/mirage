@@ -1,14 +1,12 @@
-use crate::mirage::device;
-use crate::mirage::simple_pass::SimplePass;
-use crate::mirage::swap_chain;
+use crate::gpu;
 use ash::vk;
 use ash::vk::BufferCopy;
 use std::cell::Cell;
 use std::rc::Rc;
 
 pub struct ForwardRenderer {
-    device: Rc<device::Device>,
-    swap_chain: Rc<swap_chain::SwapChain>,
+    device: Rc<gpu::Device>,
+    swap_chain: Rc<gpu::SwapChain>,
 
     command_pool: vk::CommandPool,
     transient_command_pool: vk::CommandPool,
@@ -37,8 +35,8 @@ impl ForwardRenderer {
 
     pub fn new(
         instance: &ash::Instance,
-        device: Rc<device::Device>,
-        swap_chain: Rc<swap_chain::SwapChain>,
+        device: Rc<gpu::Device>,
+        swap_chain: Rc<gpu::SwapChain>,
     ) -> Self {
         unsafe {
             let (command_pool, transient_command_pool) = Self::create_command_pools(&device);
@@ -88,7 +86,7 @@ impl ForwardRenderer {
         }
     }
 
-    pub fn render(&self, simple_pass: &SimplePass) {
+    pub fn render(&self, simple_pass: &gpu::SimplePass) {
         unsafe {
             let frame_index = self.frame_index.get();
 
@@ -103,7 +101,7 @@ impl ForwardRenderer {
                 .wait_for_fences(&[fence], true, u64::MAX)
                 .expect("failed to wait fence!");
 
-            let acquire_result = self.swap_chain.swap_chain_loader.acquire_next_image(
+            let acquire_result = self.swap_chain.swap_chain_fn.acquire_next_image(
                 self.swap_chain.swap_chain,
                 u64::MAX,
                 image_available_semaphore,
@@ -130,14 +128,13 @@ impl ForwardRenderer {
                 .reset_command_buffer(command_buffer, vk::CommandBufferResetFlags::empty())
                 .expect("failed to reset command buffer!");
 
-            let begin_info = vk::CommandBufferBeginInfo::builder()
+            let begin_info = vk::CommandBufferBeginInfo::default()
                 // ONE_TIME_SUBMIT_BIT: The command buffer will be rerecorded right after executing it once.
                 // RENDER_PASS_CONTINUE_BIT: This is a secondary command buffer that will be entirely within a single render pass.
                 // SIMULTANEOUS_USE_BIT: The command buffer can be resubmitted while it is also already pending execution.
-                .flags(vk::CommandBufferUsageFlags::SIMULTANEOUS_USE)
-                // Only relevant for secondary command buffers. It specifies which state to inherit from the calling primary command buffers.
-                // .inheritance_info()
-                .build();
+                .flags(vk::CommandBufferUsageFlags::SIMULTANEOUS_USE);
+            // Only relevant for secondary command buffers. It specifies which state to inherit from the calling primary command buffers.
+            // .inheritance_info()
 
             device
                 .begin_command_buffer(command_buffer, &begin_info)
@@ -178,15 +175,14 @@ impl ForwardRenderer {
                 },
             ];
 
-            let render_pass_begin_info = vk::RenderPassBeginInfo::builder()
+            let render_pass_begin_info = vk::RenderPassBeginInfo::default()
                 .clear_values(&clear_values)
                 .render_pass(self.render_pass)
                 .framebuffer(self.framebuffers[image_index as usize])
                 .render_area(vk::Rect2D {
                     offset: vk::Offset2D { x: 0, y: 0 },
                     extent: self.swap_chain.extent,
-                })
-                .build();
+                });
 
             // INLINE: The render pass commands will be embedded in the primary command buffer itself
             // and no secondary command buffers will be executed.
@@ -205,21 +201,26 @@ impl ForwardRenderer {
                 .end_command_buffer(command_buffer)
                 .expect("failed to end command buffer!");
 
-            let submit_info = vk::SubmitInfo::builder()
-                .command_buffers(&[command_buffer])
-                .wait_semaphores(&[image_available_semaphore])
-                .wait_dst_stage_mask(&[vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT])
-                .signal_semaphores(&[render_finished_semaphore])
-                .build();
+            let wait_semaphores = [image_available_semaphore];
+            let signal_semaphores = [render_finished_semaphore];
+            let command_buffers = [command_buffer];
+            let stage_masks = [vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT];
+
+            let submit_info = vk::SubmitInfo::default()
+                .command_buffers(&command_buffers)
+                .wait_semaphores(&wait_semaphores)
+                .wait_dst_stage_mask(&stage_masks)
+                .signal_semaphores(&signal_semaphores);
             device
                 .queue_submit(self.device.graphic_queue.unwrap(), &[submit_info], fence)
                 .unwrap();
 
-            let present_info = vk::PresentInfoKHR::builder()
-                .wait_semaphores(&[render_finished_semaphore])
-                .image_indices(&[image_index])
-                .swapchains(&[self.swap_chain.swap_chain])
-                .build();
+            let image_indices = [image_index];
+            let swap_chains = [self.swap_chain.swap_chain];
+            let present_info = vk::PresentInfoKHR::default()
+                .wait_semaphores(&signal_semaphores)
+                .image_indices(&image_indices)
+                .swapchains(&swap_chains);
 
             // Queueing an image for presentation defines a set of queue operations, including waiting on the semaphores and submitting a presentation
             // request to the presentation engine. However, the scope of this set of queue operations does not include the actual processing of the
@@ -227,7 +228,7 @@ impl ForwardRenderer {
             // vkQueuePresentKHR releases the acquisition of the image, which signals imageAvailableSemaphores for that image in later frames.
             let present_result = self
                 .swap_chain
-                .swap_chain_loader
+                .swap_chain_fn
                 .queue_present(self.device.present_queue.unwrap(), &present_info);
 
             let is_suboptimal = present_result.unwrap_or_else(|err_code| {
@@ -305,7 +306,7 @@ impl ForwardRenderer {
             aspect_mask = vk::ImageAspectFlags::COLOR;
         }
 
-        let image_memory_barrier = vk::ImageMemoryBarrier::builder()
+        let image_memory_barrier = vk::ImageMemoryBarrier::default()
             .image(image)
             .old_layout(old_layout)
             .new_layout(new_layout)
@@ -319,8 +320,7 @@ impl ForwardRenderer {
                 level_count: mip_levels,
                 base_array_layer: 0,
                 layer_count: 1,
-            })
-            .build();
+            });
 
         // https://themaister.net/blog/2019/08/14/yet-another-blog-explaining-vulkan-synchronization/
         // 1. Wait for srcStageMask to complete
@@ -415,7 +415,7 @@ impl ForwardRenderer {
 
         let command_buffer = self.begin_single_time_command();
 
-        let mut barrier = vk::ImageMemoryBarrier::builder()
+        let mut barrier = vk::ImageMemoryBarrier::default()
             .image(image)
             .src_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
             .dst_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
@@ -425,8 +425,7 @@ impl ForwardRenderer {
                 level_count: 1,
                 base_array_layer: 0,
                 layer_count: 1,
-            })
-            .build();
+            });
 
         let mut mip_width = width as i32;
         let mut mip_height = height as i32;
@@ -536,24 +535,22 @@ impl ForwardRenderer {
         self.end_single_time_command(command_buffer);
     }
 
-    unsafe fn create_command_pools(device: &device::Device) -> (vk::CommandPool, vk::CommandPool) {
+    unsafe fn create_command_pools(device: &gpu::Device) -> (vk::CommandPool, vk::CommandPool) {
         // VK_COMMAND_POOL_CREATE_TRANSIENT_BIT:
         //   Hint that command buffers are rerecorded with new commands very often (may change memory allocation behavior)
         // VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT:
         //   Allow command buffers to be rerecorded individually, without this flag they all have to be reset together
-        let create_info = vk::CommandPoolCreateInfo::builder()
+        let create_info = vk::CommandPoolCreateInfo::default()
             .flags(vk::CommandPoolCreateFlags::RESET_COMMAND_BUFFER)
-            .queue_family_index(device.graphic_queue_family.unwrap())
-            .build();
+            .queue_family_index(device.graphic_queue_family.unwrap());
         let command_pool = device
             .device
             .create_command_pool(&create_info, None)
             .expect("failed to create command pool!");
 
-        let create_info = vk::CommandPoolCreateInfo::builder()
+        let create_info = vk::CommandPoolCreateInfo::default()
             .flags(vk::CommandPoolCreateFlags::TRANSIENT)
-            .queue_family_index(device.graphic_queue_family.unwrap())
-            .build();
+            .queue_family_index(device.graphic_queue_family.unwrap());
         let transient_command_pool = device
             .device
             .create_command_pool(&create_info, None)
@@ -563,16 +560,15 @@ impl ForwardRenderer {
     }
 
     unsafe fn create_command_buffers(
-        device: &device::Device,
+        device: &gpu::Device,
         command_pool: vk::CommandPool,
     ) -> Vec<vk::CommandBuffer> {
         // VK_COMMAND_BUFFER_LEVEL_PRIMARY: Can be submitted to a queue for execution, but cannot be called from other command buffers.
         // VK_COMMAND_BUFFER_LEVEL_SECONDARY: Cannot be submitted directly, but can be called from primary command buffers.
-        let allocate_info = vk::CommandBufferAllocateInfo::builder()
+        let allocate_info = vk::CommandBufferAllocateInfo::default()
             .command_pool(command_pool)
             .command_buffer_count(Self::MAX_FRAMES_IN_FLIGHT)
-            .level(vk::CommandBufferLevel::PRIMARY)
-            .build();
+            .level(vk::CommandBufferLevel::PRIMARY);
 
         device
             .device
@@ -581,9 +577,9 @@ impl ForwardRenderer {
     }
 
     unsafe fn create_sync_objects(
-        device: &device::Device,
+        device: &gpu::Device,
     ) -> (Vec<vk::Semaphore>, Vec<vk::Semaphore>, Vec<vk::Fence>) {
-        let semaphore_create_info = vk::SemaphoreCreateInfo::builder().build();
+        let semaphore_create_info = vk::SemaphoreCreateInfo::default();
 
         let image_available_semaphores = (0..Self::MAX_FRAMES_IN_FLIGHT)
             .map(|_| {
@@ -603,9 +599,8 @@ impl ForwardRenderer {
             })
             .collect::<Vec<vk::Semaphore>>();
 
-        let fence_create_info = vk::FenceCreateInfo::builder()
-            .flags(vk::FenceCreateFlags::SIGNALED)
-            .build();
+        let fence_create_info =
+            vk::FenceCreateInfo::default().flags(vk::FenceCreateFlags::SIGNALED);
         let in_flight_fences: Vec<vk::Fence> = (0..Self::MAX_FRAMES_IN_FLIGHT)
             .map(|_| {
                 device
@@ -622,7 +617,7 @@ impl ForwardRenderer {
         )
     }
 
-    unsafe fn create_descriptor_pool(device: &device::Device) -> vk::DescriptorPool {
+    unsafe fn create_descriptor_pool(device: &gpu::Device) -> vk::DescriptorPool {
         // todo: VK_KHR_push_descriptor
 
         let mut pool_sizes: Vec<vk::DescriptorPoolSize> = vec![];
@@ -640,11 +635,10 @@ impl ForwardRenderer {
             descriptor_count: Self::MAX_FRAMES_IN_FLIGHT,
         });
 
-        let create_info = vk::DescriptorPoolCreateInfo::builder()
+        let create_info = vk::DescriptorPoolCreateInfo::default()
             // .flags(vk::DescriptorPoolCreateFlags::FREE_DESCRIPTOR_SET)
             .pool_sizes(&pool_sizes)
-            .max_sets(Self::MAX_FRAMES_IN_FLIGHT)
-            .build();
+            .max_sets(Self::MAX_FRAMES_IN_FLIGHT);
 
         device
             .device
@@ -654,8 +648,8 @@ impl ForwardRenderer {
 
     unsafe fn create_render_pass(
         instance: &ash::Instance,
-        device: &device::Device,
-        swap_chain: &swap_chain::SwapChain,
+        device: &gpu::Device,
+        swap_chain: &gpu::SwapChain,
     ) -> vk::RenderPass {
         // Textures and framebuffers in Vulkan are represented by VkImage objects with a certain pixel format,
         //   however the layout of the pixels in memory can change based on what you're trying to do with an image.
@@ -699,27 +693,26 @@ impl ForwardRenderer {
 
         let attachments = [color_attachment, depth_attachment, resolve_color_attachment];
 
-        let color_attachment_ref = vk::AttachmentReference {
+        let color_attachment_refs = [vk::AttachmentReference {
             attachment: 0,
             layout: vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL,
-        };
+        }];
         let depth_attachment_ref = vk::AttachmentReference {
             attachment: 1,
             layout: vk::ImageLayout::DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
         };
-        let resolve_color_attachment_ref = vk::AttachmentReference {
+        let resolve_color_attachment_refs = [vk::AttachmentReference {
             attachment: 2,
             layout: vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL,
-        };
+        }];
 
-        let sub_pass = vk::SubpassDescription::builder()
+        let sub_passes = [vk::SubpassDescription::default()
             .pipeline_bind_point(vk::PipelineBindPoint::GRAPHICS)
-            .color_attachments(&[color_attachment_ref])
+            .color_attachments(&color_attachment_refs)
             .depth_stencil_attachment(&depth_attachment_ref)
-            .resolve_attachments(&[resolve_color_attachment_ref])
-            // .input_attachments()
-            // .preserve_attachments()
-            .build();
+            .resolve_attachments(&resolve_color_attachment_refs)];
+        // .input_attachments()
+        // .preserve_attachments()
 
         let dependencies = [vk::SubpassDependency {
             src_subpass: vk::SUBPASS_EXTERNAL,
@@ -735,11 +728,10 @@ impl ForwardRenderer {
             ..Default::default()
         }];
 
-        let create_info = vk::RenderPassCreateInfo::builder()
+        let create_info = vk::RenderPassCreateInfo::default()
             .attachments(&attachments)
-            .subpasses(&[sub_pass])
-            .dependencies(&dependencies)
-            .build();
+            .subpasses(&sub_passes)
+            .dependencies(&dependencies);
 
         device
             .device
@@ -748,8 +740,8 @@ impl ForwardRenderer {
     }
 
     unsafe fn create_color_resources(
-        device: &device::Device,
-        swap_chain: &swap_chain::SwapChain,
+        device: &gpu::Device,
+        swap_chain: &gpu::SwapChain,
     ) -> (vk::Image, vk::DeviceMemory, vk::ImageView) {
         let (color_image, color_image_memory) = device.create_image(
             swap_chain.extent.width,
@@ -779,8 +771,8 @@ impl ForwardRenderer {
 
     unsafe fn create_depth_resources(
         instance: &ash::Instance,
-        device: &device::Device,
-        swap_chain: &swap_chain::SwapChain,
+        device: &gpu::Device,
+        swap_chain: &gpu::SwapChain,
     ) -> (vk::Image, vk::DeviceMemory, vk::ImageView) {
         let depth_format = Self::find_depth_format(instance, device);
         let (depth_image, depth_image_memory) = device.create_image(
@@ -800,8 +792,8 @@ impl ForwardRenderer {
     }
 
     unsafe fn create_framebuffers(
-        device: &device::Device,
-        swap_chain: &swap_chain::SwapChain,
+        device: &gpu::Device,
+        swap_chain: &gpu::SwapChain,
         render_pass: vk::RenderPass,
         color_image_view: vk::ImageView,
         depth_image_view: vk::ImageView,
@@ -813,13 +805,12 @@ impl ForwardRenderer {
             .map(|&image_view| {
                 let attachments = [color_image_view, depth_image_view, image_view];
 
-                let create_info = vk::FramebufferCreateInfo::builder()
+                let create_info = vk::FramebufferCreateInfo::default()
                     .width(swap_chain.extent.width)
                     .height(swap_chain.extent.height)
                     .layers(1)
                     .attachments(&attachments)
-                    .render_pass(render_pass)
-                    .build();
+                    .render_pass(render_pass);
 
                 device
                     .device
@@ -832,17 +823,15 @@ impl ForwardRenderer {
     unsafe fn begin_single_time_command(&self) -> vk::CommandBuffer {
         let device = &self.device.device;
 
-        let allocate_info = vk::CommandBufferAllocateInfo::builder()
+        let allocate_info = vk::CommandBufferAllocateInfo::default()
             .command_pool(self.transient_command_pool)
             .level(vk::CommandBufferLevel::PRIMARY)
-            .command_buffer_count(1)
-            .build();
+            .command_buffer_count(1);
         let command_buffer = device
             .allocate_command_buffers(&allocate_info)
             .expect("failed to allocate transient command buffer!")[0];
-        let begin_info = vk::CommandBufferBeginInfo::builder()
-            .flags(vk::CommandBufferUsageFlags::ONE_TIME_SUBMIT)
-            .build();
+        let begin_info = vk::CommandBufferBeginInfo::default()
+            .flags(vk::CommandBufferUsageFlags::ONE_TIME_SUBMIT);
 
         device
             .begin_command_buffer(command_buffer, &begin_info)
@@ -857,9 +846,8 @@ impl ForwardRenderer {
             .end_command_buffer(command_buffer)
             .expect("failed to end single time command buffer!");
 
-        let submit_info = vk::SubmitInfo::builder()
-            .command_buffers(&[command_buffer])
-            .build();
+        let command_buffers = [command_buffer];
+        let submit_info = vk::SubmitInfo::default().command_buffers(&command_buffers);
 
         device
             .queue_submit(
@@ -882,7 +870,7 @@ impl ForwardRenderer {
             || format == vk::Format::D16_UNORM_S8_UINT
     }
 
-    unsafe fn find_depth_format(instance: &ash::Instance, device: &device::Device) -> vk::Format {
+    unsafe fn find_depth_format(instance: &ash::Instance, device: &gpu::Device) -> vk::Format {
         Self::find_supported_format(
             instance,
             device,
@@ -898,7 +886,7 @@ impl ForwardRenderer {
 
     unsafe fn find_supported_format(
         instance: &ash::Instance,
-        device: &device::Device,
+        device: &gpu::Device,
         candidates: Vec<vk::Format>,
         tiling: vk::ImageTiling,
         features: vk::FormatFeatureFlags,

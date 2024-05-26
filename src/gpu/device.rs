@@ -7,8 +7,8 @@ const DEVICE_EXTENSIONS: &[&CStr] = &[
     // The Vulkan spec states: If the VK_KHR_portability_subset extension is included in pProperties
     // of vkEnumerateDeviceExtensionProperties, ppEnabledExtensionNames must include "VK_KHR_portability_subset"
     #[cfg(any(target_os = "macos", target_os = "ios"))]
-    vk::KhrPortabilitySubsetFn::name(),
-    vk::KhrSwapchainFn::name(),
+    vk::KHR_PORTABILITY_SUBSET_NAME,
+    vk::KHR_SWAPCHAIN_NAME,
     // vk::ExtShaderAtomicFloatFn::name()
 ];
 
@@ -36,11 +36,11 @@ pub struct Device {
 impl Device {
     pub fn new(
         instance: Rc<ash::Instance>,
-        surface_loader: &ash::extensions::khr::Surface,
+        surface_fn: &ash::khr::surface::Instance,
         surface: vk::SurfaceKHR,
     ) -> Self {
         unsafe {
-            let physical_device = Device::pick_physical_device(&instance, &surface_loader, surface);
+            let physical_device = Device::pick_physical_device(&instance, &surface_fn, surface);
             let physical_device_properties =
                 instance.get_physical_device_properties(physical_device);
             let physical_device_memory_properties =
@@ -49,7 +49,7 @@ impl Device {
             let msaa_samples = Self::get_max_usable_sample_count(&physical_device_properties);
 
             let (graphic_queue_family, present_queue_family, compute_queue_family) =
-                Self::find_queue_families(&instance, &surface_loader, surface, physical_device);
+                Self::find_queue_families(&instance, &surface_fn, surface, physical_device);
             let (device, graphic_queue, present_queue, compute_queue) = Self::create_logical_device(
                 &instance,
                 physical_device,
@@ -58,7 +58,7 @@ impl Device {
                 compute_queue_family,
             );
             let (surface_capabilities, surface_formats, surface_present_modes) =
-                Self::query_surface_support(&surface_loader, surface, physical_device);
+                Self::query_surface_support(&surface_fn, surface, physical_device);
 
             Self {
                 instance,
@@ -104,7 +104,7 @@ impl Device {
         // if you keep the image in IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL or IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL the driver knows that it can keep the image compressed and the GPU gets a big win.
         // If you transition the image to IMAGE_LAYOUT_GENERAL the driver cannot guarantee the image can be compressed and may have to decompress it in place.
 
-        let create_info = vk::ImageCreateInfo::builder()
+        let create_info = vk::ImageCreateInfo::default()
             .image_type(vk::ImageType::TYPE_2D)
             .extent(vk::Extent3D {
                 width,
@@ -124,11 +124,10 @@ impl Device {
             //      One example, however, would be if you wanted to use an image as a staging image in combination with the VK_IMAGE_TILING_LINEAR layout.
             .initial_layout(vk::ImageLayout::UNDEFINED)
             .usage(usage)
-            .samples(samples)
-            // There are some optional flags for images that are related to sparse images. Sparse images are images where only certain regions are actually backed by memory.
-            // If you were using a 3D texture for a voxel terrain, for example, then you could use this to avoid allocating memory to store large volumes of "air" values.
-            // .flags()
-            .build();
+            .samples(samples);
+        // There are some optional flags for images that are related to sparse images. Sparse images are images where only certain regions are actually backed by memory.
+        // If you were using a 3D texture for a voxel terrain, for example, then you could use this to avoid allocating memory to store large volumes of "air" values.
+        // .flags()
 
         let image = self
             .device
@@ -162,7 +161,7 @@ impl Device {
         aspect_flags: vk::ImageAspectFlags,
         mips: u32,
     ) -> vk::ImageView {
-        let create_info = vk::ImageViewCreateInfo::builder()
+        let create_info = vk::ImageViewCreateInfo::default()
             .image(image)
             .view_type(vk::ImageViewType::TYPE_2D)
             .format(format)
@@ -186,8 +185,7 @@ impl Device {
                 layer_count: 1,
                 base_mip_level: 0,
                 level_count: mips,
-            })
-            .build();
+            });
 
         self.device
             .create_image_view(&create_info, None)
@@ -200,14 +198,13 @@ impl Device {
         usage: vk::BufferUsageFlags,
         memory_properties: vk::MemoryPropertyFlags,
     ) -> (vk::Buffer, vk::DeviceMemory, vk::DeviceSize) {
-        let create_info = vk::BufferCreateInfo::builder()
+        let create_info = vk::BufferCreateInfo::default()
             // The flags parameter is used to configure sparse buffer memory,
             // which is not relevant right now. We'll leave it at the default value of 0.
             // .flags()
             .size(size)
             .usage(usage)
-            .sharing_mode(vk::SharingMode::EXCLUSIVE)
-            .build();
+            .sharing_mode(vk::SharingMode::EXCLUSIVE);
 
         let buffer = self
             .device
@@ -215,12 +212,11 @@ impl Device {
             .expect("failed to create buffer!");
 
         let requirements = self.device.get_buffer_memory_requirements(buffer);
-        let allocate_info = vk::MemoryAllocateInfo::builder()
+        let allocate_info = vk::MemoryAllocateInfo::default()
             .allocation_size(requirements.size)
             .memory_type_index(
                 self.find_memory_type_index(requirements.memory_type_bits, memory_properties),
-            )
-            .build();
+            );
 
         let buffer_memory = self
             .device
@@ -236,7 +232,7 @@ impl Device {
     }
 
     pub unsafe fn create_shader_module(&self, code: &[u32]) -> vk::ShaderModule {
-        let create_info = vk::ShaderModuleCreateInfo::builder().code(code).build();
+        let create_info = vk::ShaderModuleCreateInfo::default().code(code);
 
         self.device
             .create_shader_module(&create_info, None)
@@ -294,18 +290,16 @@ impl Device {
 
         let mut queue_infos: Vec<vk::DeviceQueueCreateInfo> = vec![];
         queue_families.into_iter().for_each(|family_index| {
-            let info = vk::DeviceQueueCreateInfo::builder()
+            let info = vk::DeviceQueueCreateInfo::default()
                 .queue_family_index(family_index)
-                .queue_priorities(&[1.0])
-                .build();
+                .queue_priorities(&[1.0]);
 
             queue_infos.push(info);
         });
 
-        let features = vk::PhysicalDeviceFeatures::builder()
+        let features = vk::PhysicalDeviceFeatures::default()
             .sampler_anisotropy(true)
-            .sample_rate_shading(true)
-            .build();
+            .sample_rate_shading(true);
 
         let extension_names = DEVICE_EXTENSIONS
             .iter()
@@ -313,11 +307,10 @@ impl Device {
             .map(|extension| extension.as_ptr())
             .collect::<Vec<_>>();
 
-        let create_info = vk::DeviceCreateInfo::builder()
+        let create_info = vk::DeviceCreateInfo::default()
             .enabled_extension_names(&extension_names)
             .enabled_features(&features)
-            .queue_create_infos(&queue_infos)
-            .build();
+            .queue_create_infos(&queue_infos);
 
         let device = instance
             .create_device(physical_device, &create_info, None)
@@ -348,20 +341,20 @@ impl Device {
 
     unsafe fn pick_physical_device(
         instance: &ash::Instance,
-        surface_loader: &ash::extensions::khr::Surface,
+        surface_fn: &ash::khr::surface::Instance,
         surface: vk::SurfaceKHR,
     ) -> vk::PhysicalDevice {
         let physical_devices = instance
             .enumerate_physical_devices()
             .expect("failed to find GPUs with vulkan support!");
 
-        let point_map: BTreeMap<u32, vk::PhysicalDevice> = physical_devices
+        let score_map: BTreeMap<u32, vk::PhysicalDevice> = physical_devices
             .into_iter()
             .map(|physical_device| {
                 (
                     Self::rate_physical_device_suitability(
                         &instance,
-                        &surface_loader,
+                        &surface_fn,
                         surface,
                         physical_device,
                     ),
@@ -370,7 +363,7 @@ impl Device {
             })
             .collect();
 
-        match point_map.first_key_value() {
+        match score_map.first_key_value() {
             Some((count, physical_device)) if *count > 0 => *physical_device,
             _ => panic!("failed to find a suitable device!"),
         }
@@ -378,7 +371,7 @@ impl Device {
 
     unsafe fn rate_physical_device_suitability(
         instance: &ash::Instance,
-        surface_loader: &ash::extensions::khr::Surface,
+        surface_fn: &ash::khr::surface::Instance,
         surface: vk::SurfaceKHR,
         physical_device: vk::PhysicalDevice,
     ) -> u32 {
@@ -397,7 +390,7 @@ impl Device {
         score += properties.limits.max_image_dimension2_d;
 
         let (graphic_queue_family, present_queue_family, compute_queue_family) =
-            Self::find_queue_families(&instance, &surface_loader, surface, physical_device);
+            Self::find_queue_families(&instance, &surface_fn, surface, physical_device);
 
         if graphic_queue_family.is_none()
             || present_queue_family.is_none()
@@ -408,7 +401,7 @@ impl Device {
             score = 0;
         } else {
             let (_, formats, present_modes) =
-                Self::query_surface_support(&surface_loader, surface, physical_device);
+                Self::query_surface_support(&surface_fn, surface, physical_device);
             if formats.is_empty() || present_modes.is_empty() {
                 score = 0;
             }
@@ -419,7 +412,7 @@ impl Device {
 
     unsafe fn find_queue_families(
         instance: &ash::Instance,
-        surface_loader: &ash::extensions::khr::Surface,
+        surface_fn: &ash::khr::surface::Instance,
         surface: vk::SurfaceKHR,
         physical_device: vk::PhysicalDevice,
     ) -> (Option<u32>, Option<u32>, Option<u32>) {
@@ -436,7 +429,7 @@ impl Device {
                     graphic_queue_family = Some(index as u32);
                 }
 
-                let is_support_surface = surface_loader
+                let is_support_surface = surface_fn
                     .get_physical_device_surface_support(physical_device, index as u32, surface)
                     .unwrap();
 
@@ -450,7 +443,7 @@ impl Device {
 
         if present_queue_family.is_none() {
             for (index, _property) in properties.iter().enumerate() {
-                let is_support_surface = surface_loader
+                let is_support_surface = surface_fn
                     .get_physical_device_surface_support(physical_device, index as u32, surface)
                     .unwrap();
 
@@ -498,7 +491,7 @@ impl Device {
     }
 
     unsafe fn query_surface_support(
-        surface_loader: &ash::extensions::khr::Surface,
+        surface_fn: &ash::khr::surface::Instance,
         surface: vk::SurfaceKHR,
         physical_device: vk::PhysicalDevice,
     ) -> (
@@ -506,13 +499,13 @@ impl Device {
         Vec<vk::SurfaceFormatKHR>,
         Vec<vk::PresentModeKHR>,
     ) {
-        let capabilities = surface_loader
+        let capabilities = surface_fn
             .get_physical_device_surface_capabilities(physical_device, surface)
             .unwrap();
-        let formats = surface_loader
+        let formats = surface_fn
             .get_physical_device_surface_formats(physical_device, surface)
             .unwrap();
-        let present_modes = surface_loader
+        let present_modes = surface_fn
             .get_physical_device_surface_present_modes(physical_device, surface)
             .unwrap();
 

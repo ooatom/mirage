@@ -1,5 +1,6 @@
-use crate::mirage::*;
-use crate::*;
+use crate::gpu;
+use crate::Shaders;
+
 use ash::vk;
 use image;
 use std::ffi::{c_void, CStr};
@@ -8,8 +9,8 @@ use std::mem::{align_of, size_of};
 use std::rc::Rc;
 
 pub struct SimplePass {
-    device: Rc<device::Device>,
-    renderer: Rc<forward_renderer::ForwardRenderer>,
+    device: Rc<gpu::Device>,
+    renderer: Rc<gpu::ForwardRenderer>,
     descriptor_set_layout: vk::DescriptorSetLayout,
     pipeline: vk::Pipeline,
     pipeline_layout: vk::PipelineLayout,
@@ -20,13 +21,13 @@ pub struct SimplePass {
 
     descriptor_sets: Vec<vk::DescriptorSet>,
 
-    objects: Vec<simple_pass_object::SimplePassObject>,
+    objects: Vec<gpu::SimplePassObject>,
 }
 
 impl SimplePass {
     pub fn new(
-        device: Rc<device::Device>,
-        renderer: Rc<forward_renderer::ForwardRenderer>,
+        device: Rc<gpu::Device>,
+        renderer: Rc<gpu::ForwardRenderer>,
     ) -> Self {
         unsafe {
             let descriptor_set_layout = SimplePass::create_descriptor_set_layout(&device);
@@ -59,33 +60,31 @@ impl SimplePass {
         }
     }
 
-    pub fn add_object(&mut self, object: simple_pass_object::SimplePassObject) {
+    pub fn add_object(&mut self, object: gpu::SimplePassObject) {
         self.objects.push(object);
     }
 
     pub fn update(&self, frame_index: usize, _: f32) {
         self.objects.iter().for_each(|obj| {
-            let image_info = vk::DescriptorImageInfo {
+            let image_infos = [vk::DescriptorImageInfo {
                 image_view: obj.texture_image_view,
                 image_layout: vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
                 sampler: obj.texture_image_sampler,
-            };
+            }];
 
-            let texture_write = vk::WriteDescriptorSet::builder()
+            let texture_write = vk::WriteDescriptorSet::default()
                 .descriptor_type(vk::DescriptorType::SAMPLED_IMAGE)
-                .image_info(&[image_info])
+                .image_info(&image_infos)
                 .dst_set(self.descriptor_sets[frame_index])
                 .dst_binding(1)
-                .dst_array_element(0)
-                .build();
+                .dst_array_element(0);
 
-            let sampler_write = vk::WriteDescriptorSet::builder()
+            let sampler_write = vk::WriteDescriptorSet::default()
                 .descriptor_type(vk::DescriptorType::SAMPLER)
-                .image_info(&[image_info])
+                .image_info(&image_infos)
                 .dst_set(self.descriptor_sets[frame_index])
                 .dst_binding(2)
-                .dst_array_element(0)
-                .build();
+                .dst_array_element(0);
 
             unsafe {
                 self.device
@@ -240,7 +239,7 @@ impl SimplePass {
             mip_levels,
         );
 
-        let create_info = vk::SamplerCreateInfo::builder()
+        let create_info = vk::SamplerCreateInfo::default()
             .anisotropy_enable(true)
             .max_anisotropy(
                 self.device
@@ -260,8 +259,7 @@ impl SimplePass {
             .address_mode_u(vk::SamplerAddressMode::REPEAT)
             .address_mode_v(vk::SamplerAddressMode::REPEAT)
             .address_mode_w(vk::SamplerAddressMode::REPEAT)
-            .border_color(vk::BorderColor::FLOAT_OPAQUE_BLACK)
-            .build();
+            .border_color(vk::BorderColor::FLOAT_OPAQUE_BLACK);
 
         let sampler = self
             .device
@@ -314,7 +312,7 @@ impl SimplePass {
         (buffer, buffer_memory)
     }
 
-    unsafe fn create_descriptor_set_layout(device: &device::Device) -> vk::DescriptorSetLayout {
+    unsafe fn create_descriptor_set_layout(device: &gpu::Device) -> vk::DescriptorSetLayout {
         let uniform_layout_binding = vk::DescriptorSetLayoutBinding {
             binding: 0,
             descriptor_type: vk::DescriptorType::UNIFORM_BUFFER,
@@ -339,13 +337,12 @@ impl SimplePass {
             ..Default::default()
         };
 
-        let create_info = vk::DescriptorSetLayoutCreateInfo::builder()
-            .bindings(&[
-                uniform_layout_binding,
-                texture_layout_binding,
-                sampler_layout_binding,
-            ])
-            .build();
+        let bindings = [
+            uniform_layout_binding,
+            texture_layout_binding,
+            sampler_layout_binding,
+        ];
+        let create_info = vk::DescriptorSetLayoutCreateInfo::default().bindings(&bindings);
 
         device
             .device
@@ -354,8 +351,8 @@ impl SimplePass {
     }
 
     unsafe fn create_pipeline(
-        device: &device::Device,
-        renderer: &forward_renderer::ForwardRenderer,
+        device: &gpu::Device,
+        renderer: &gpu::ForwardRenderer,
         descriptor_set_layout: vk::DescriptorSetLayout,
     ) -> (vk::Pipeline, vk::PipelineLayout) {
         // The Vulkan SDK includes libshaderc, which is a library to compile GLSL code to SPIR-V from within your program.
@@ -373,33 +370,32 @@ impl SimplePass {
         let shader_code = ash::util::read_spv(&mut buffer).unwrap();
         let shader_module = device.create_shader_module(&shader_code);
 
-        let vert_shader_stage = vk::PipelineShaderStageCreateInfo::builder()
+        let vert_shader_stage = vk::PipelineShaderStageCreateInfo::default()
             .module(shader_module)
             .stage(vk::ShaderStageFlags::VERTEX)
-            .name(CStr::from_bytes_with_nul_unchecked(b"vs\0"))
-            // It allows you to specify values for shader constants. You can use a single shader module where its behavior can be configured
-            // at pipeline creation by specifying different values for the constants used in it. This is more efficient than configuring
-            // the shader using variables at render time, because the compiler can do optimizations like eliminating if statements that
-            // depend on these values. If you don't have any constants like that, then you can set the member to nullptr,
-            // which our struct initialization does automatically.
-            // .specialization_info()
-            .build();
+            .name(CStr::from_bytes_with_nul_unchecked(b"vs\0"));
+        // It allows you to specify values for shader constants. You can use a single shader module where its behavior can be configured
+        // at pipeline creation by specifying different values for the constants used in it. This is more efficient than configuring
+        // the shader using variables at render time, because the compiler can do optimizations like eliminating if statements that
+        // depend on these values. If you don't have any constants like that, then you can set the member to nullptr,
+        // which our struct initialization does automatically.
+        // .specialization_info()
 
-        let frag_shader_stage = vk::PipelineShaderStageCreateInfo::builder()
+        let frag_shader_stage = vk::PipelineShaderStageCreateInfo::default()
             .module(shader_module)
             .stage(vk::ShaderStageFlags::FRAGMENT)
-            .name(CStr::from_bytes_with_nul_unchecked(b"fs\0"))
-            .build();
+            .name(CStr::from_bytes_with_nul_unchecked(b"fs\0"));
 
-        let input_binding = Vertex::get_binding_description();
+        let shader_stages = [vert_shader_stage, frag_shader_stage];
+
+        let input_bindings = [Vertex::get_binding_description()];
         let input_attributes = Vertex::get_attribute_descriptions();
 
-        let vertex_input_state = vk::PipelineVertexInputStateCreateInfo::builder()
-            .vertex_binding_descriptions(&[input_binding])
-            .vertex_attribute_descriptions(&input_attributes)
-            .build();
+        let vertex_input_state = vk::PipelineVertexInputStateCreateInfo::default()
+            .vertex_binding_descriptions(&input_bindings)
+            .vertex_attribute_descriptions(&input_attributes);
 
-        let input_assembly_stage = vk::PipelineInputAssemblyStateCreateInfo::builder()
+        let input_assembly_stage = vk::PipelineInputAssemblyStateCreateInfo::default()
             .topology(vk::PrimitiveTopology::TRIANGLE_LIST)
             // used with Indexed drawing + Triangle Fan/Strip topologies. This is more efficient than explicitly
             // ending the current primitive and explicitly starting a new primitive of the same type.
@@ -407,19 +403,16 @@ impl SimplePass {
             //   If VkIndexType is VK_INDEX_TYPE_UINT16, special index is 0xFFFF
             //   If VkIndexType is VK_INDEX_TYPE_UINT32, special index is 0xFFFFFFFF
             // One Really Good use of Restart Enable is in Drawing Terrain Surfaces with Triangle Strips.
-            .primitive_restart_enable(false)
-            .build();
+            .primitive_restart_enable(false);
 
-        let dynamic_state = vk::PipelineDynamicStateCreateInfo::builder()
-            .dynamic_states(&[vk::DynamicState::VIEWPORT, vk::DynamicState::SCISSOR])
-            .build();
+        let dynamic_state = vk::PipelineDynamicStateCreateInfo::default()
+            .dynamic_states(&[vk::DynamicState::VIEWPORT, vk::DynamicState::SCISSOR]);
 
-        let viewport_state = vk::PipelineViewportStateCreateInfo::builder()
+        let viewport_state = vk::PipelineViewportStateCreateInfo::default()
             .viewport_count(1)
-            .scissor_count(1)
-            .build();
+            .scissor_count(1);
 
-        let rasterization_state = vk::PipelineRasterizationStateCreateInfo::builder()
+        let rasterization_state = vk::PipelineRasterizationStateCreateInfo::default()
             .cull_mode(vk::CullModeFlags::BACK)
             .front_face(vk::FrontFace::COUNTER_CLOCKWISE)
             .polygon_mode(vk::PolygonMode::FILL)
@@ -429,17 +422,15 @@ impl SimplePass {
             .depth_bias_enable(false)
             .depth_bias_clamp(0.0)
             .depth_bias_slope_factor(0.0)
-            .depth_bias_constant_factor(0.0)
-            .build();
+            .depth_bias_constant_factor(0.0);
 
-        let multisample = vk::PipelineMultisampleStateCreateInfo::builder()
+        let multisample = vk::PipelineMultisampleStateCreateInfo::default()
             .sample_shading_enable(true)
             .min_sample_shading(0.2)
             .rasterization_samples(device.msaa_samples)
             .sample_mask(&[])
             .alpha_to_coverage_enable(false)
-            .alpha_to_one_enable(false)
-            .build();
+            .alpha_to_one_enable(false);
 
         let color_attachments = [vk::PipelineColorBlendAttachmentState {
             blend_enable: false.into(),
@@ -451,38 +442,36 @@ impl SimplePass {
             alpha_blend_op: vk::BlendOp::ADD,
             color_write_mask: vk::ColorComponentFlags::RGBA,
         }];
-        let color_blend = vk::PipelineColorBlendStateCreateInfo::builder()
+        let color_blend = vk::PipelineColorBlendStateCreateInfo::default()
             // corresponding to renderPass subPass pColorAttachments
             .attachments(&color_attachments)
             .blend_constants([0.0, 0.0, 0.0, 0.0])
             .logic_op_enable(false)
-            .logic_op(vk::LogicOp::COPY)
-            .build();
+            .logic_op(vk::LogicOp::COPY);
 
-        let depth_stencil = vk::PipelineDepthStencilStateCreateInfo::builder()
+        let depth_stencil = vk::PipelineDepthStencilStateCreateInfo::default()
             .depth_write_enable(true)
             .depth_test_enable(true)
             .depth_compare_op(vk::CompareOp::LESS)
             .stencil_test_enable(false)
-            .front(vk::StencilOpState::builder().build())
-            .back(vk::StencilOpState::builder().build())
+            .front(vk::StencilOpState::default())
+            .back(vk::StencilOpState::default())
             // only keep fragments that fall within the specified depth range
             .depth_bounds_test_enable(false)
             .min_depth_bounds(0.0)
-            .max_depth_bounds(1.0)
-            .build();
+            .max_depth_bounds(1.0);
 
-        let layout_create_info = vk::PipelineLayoutCreateInfo::builder()
-            .set_layouts(&[descriptor_set_layout])
-            // .push_constant_ranges()
-            .build();
+        let descriptor_set_layouts = [descriptor_set_layout];
+        let layout_create_info =
+            vk::PipelineLayoutCreateInfo::default().set_layouts(&descriptor_set_layouts);
+        // .push_constant_ranges()
         let layout = device
             .device
             .create_pipeline_layout(&layout_create_info, None)
             .expect("failed to create pipeline layout!");
 
-        let create_info = vk::GraphicsPipelineCreateInfo::builder()
-            .stages(&[vert_shader_stage, frag_shader_stage])
+        let create_info = vk::GraphicsPipelineCreateInfo::default()
+            .stages(&shader_stages)
             .vertex_input_state(&vertex_input_state)
             .input_assembly_state(&input_assembly_stage)
             .dynamic_state(&dynamic_state)
@@ -495,8 +484,7 @@ impl SimplePass {
             .render_pass(renderer.render_pass)
             .subpass(0)
             .base_pipeline_handle(vk::Pipeline::null())
-            .base_pipeline_index(0)
-            .build();
+            .base_pipeline_index(0);
 
         let pipeline = device
             .device
@@ -509,14 +497,14 @@ impl SimplePass {
     }
 
     unsafe fn create_uniform_buffers(
-        device: &device::Device,
+        device: &gpu::Device,
     ) -> (Vec<vk::Buffer>, Vec<vk::DeviceMemory>, Vec<*mut c_void>) {
         let buffer_size = size_of::<UniformBufferObject>() as vk::DeviceSize;
         let mut buffers = Vec::new();
         let mut memories = Vec::new();
         let mut memories_mapped = Vec::new();
 
-        for _ in 0..forward_renderer::ForwardRenderer::MAX_FRAMES_IN_FLIGHT {
+        for _ in 0..gpu::ForwardRenderer::MAX_FRAMES_IN_FLIGHT {
             let (buffer, memory, _) = device.create_buffer(
                 buffer_size,
                 vk::BufferUsageFlags::UNIFORM_BUFFER,
@@ -537,16 +525,15 @@ impl SimplePass {
     }
 
     unsafe fn create_descriptor_sets(
-        device: &device::Device,
-        renderer: &forward_renderer::ForwardRenderer,
+        device: &gpu::Device,
+        renderer: &gpu::ForwardRenderer,
         layout: vk::DescriptorSetLayout,
         uniform_buffers: &Vec<vk::Buffer>,
     ) -> Vec<vk::DescriptorSet> {
-        let layouts = [layout; forward_renderer::ForwardRenderer::MAX_FRAMES_IN_FLIGHT as usize];
-        let allocate_info = vk::DescriptorSetAllocateInfo::builder()
+        let layouts = [layout; gpu::ForwardRenderer::MAX_FRAMES_IN_FLIGHT as usize];
+        let allocate_info = vk::DescriptorSetAllocateInfo::default()
             .descriptor_pool(renderer.descriptor_pool)
-            .set_layouts(&layouts)
-            .build();
+            .set_layouts(&layouts);
 
         let descriptor_sets = device
             .device
@@ -554,19 +541,18 @@ impl SimplePass {
             .expect("failed to allocate descriptor sets!");
 
         for (index, descriptor_set) in descriptor_sets.iter().enumerate() {
-            let buffer_info = vk::DescriptorBufferInfo {
+            let buffer_infos = [vk::DescriptorBufferInfo {
                 buffer: uniform_buffers[index],
                 offset: 0,
                 range: size_of::<UniformBufferObject>() as vk::DeviceSize,
-            };
-            let ubo_write = vk::WriteDescriptorSet::builder()
+            }];
+            let ubo_write = vk::WriteDescriptorSet::default()
                 .descriptor_type(vk::DescriptorType::UNIFORM_BUFFER)
-                .buffer_info(&[buffer_info])
+                .buffer_info(&buffer_infos)
                 .dst_set(*descriptor_set)
                 .dst_binding(0)
                 // starting element in that array
-                .dst_array_element(0)
-                .build();
+                .dst_array_element(0);
 
             device.device.update_descriptor_sets(&[ubo_write], &[]);
         }

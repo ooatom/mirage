@@ -1,11 +1,11 @@
-use crate::mirage::device;
-use ash::vk;
+use crate::gpu;
+use ash::{Entry, vk};
 use std::rc::Rc;
 use winit::window::Window;
 
 pub struct SwapChain {
-    device: Rc<device::Device>,
-    pub swap_chain_loader: ash::extensions::khr::Swapchain,
+    device: Rc<gpu::Device>,
+    pub swap_chain_fn: ash::khr::swapchain::Device,
     pub swap_chain: vk::SwapchainKHR,
     pub format: vk::Format,
     pub color_space: vk::ColorSpaceKHR,
@@ -20,7 +20,7 @@ impl SwapChain {
     pub fn new(
         instance: &ash::Instance,
         window: &Window,
-        device: Rc<device::Device>,
+        device: Rc<gpu::Device>,
         surface: vk::SurfaceKHR,
     ) -> Self {
         unsafe {
@@ -35,7 +35,7 @@ impl SwapChain {
 
             Self {
                 device,
-                swap_chain_loader,
+                swap_chain_fn: swap_chain_loader,
                 swap_chain,
                 format: surface_format.format,
                 color_space: surface_format.color_space,
@@ -51,10 +51,10 @@ impl SwapChain {
     unsafe fn create_swap_chain(
         instance: &ash::Instance,
         window: &Window,
-        device: &device::Device,
+        device: &gpu::Device,
         surface: vk::SurfaceKHR,
     ) -> (
-        ash::extensions::khr::Swapchain,
+        ash::khr::swapchain::Device,
         vk::SwapchainKHR,
         vk::SurfaceFormatKHR,
         vk::PresentModeKHR,
@@ -79,7 +79,7 @@ impl SwapChain {
             device.surface_capabilities.current_transform
         };
 
-        let mut create_info = vk::SwapchainCreateInfoKHR::builder()
+        let mut create_info = vk::SwapchainCreateInfoKHR::default()
             .surface(surface)
             .min_image_count(image_count)
             .image_format(surface_format.format)
@@ -90,9 +90,8 @@ impl SwapChain {
             .pre_transform(pre_transform)
             .composite_alpha(vk::CompositeAlphaFlagsKHR::OPAQUE)
             .present_mode(present_mode)
-            .clipped(true)
-            // .old_swapchain(None)
-            .build();
+            .clipped(true);
+        // .old_swapchain(None)
 
         if device.graphic_queue_family == device.present_queue_family {
             create_info.image_sharing_mode = vk::SharingMode::EXCLUSIVE;
@@ -107,8 +106,8 @@ impl SwapChain {
             ]
             .as_ptr();
         }
-
-        let swap_chain_loader = ash::extensions::khr::Swapchain::new(&instance, &device.device);
+        
+        let swap_chain_loader = ash::khr::swapchain::Device::new(&instance, &device.device);
         let swap_chain = swap_chain_loader
             .create_swapchain(&create_info, None)
             .expect("failed to create swap chain!");
@@ -123,8 +122,8 @@ impl SwapChain {
     }
 
     unsafe fn get_swap_chain_images(
-        device: &device::Device,
-        swap_chain_loader: &ash::extensions::khr::Swapchain,
+        device: &gpu::Device,
+        swap_chain_loader: &ash::khr::swapchain::Device,
         swap_chain: vk::SwapchainKHR,
         format: vk::Format,
     ) -> (Vec<vk::Image>, Vec<vk::ImageView>) {
@@ -200,8 +199,7 @@ impl Drop for SwapChain {
             for &image_view in self.image_views.iter() {
                 self.device.device.destroy_image_view(image_view, None);
             }
-            self.swap_chain_loader
-                .destroy_swapchain(self.swap_chain, None);
+            self.swap_chain_fn.destroy_swapchain(self.swap_chain, None);
         }
     }
 }
