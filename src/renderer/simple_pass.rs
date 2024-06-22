@@ -1,4 +1,4 @@
-use crate::gpu;
+use super::*;
 use crate::Shaders;
 
 use ash::vk;
@@ -7,10 +7,11 @@ use std::ffi::{c_void, CStr};
 use std::io::Cursor;
 use std::mem::{align_of, size_of};
 use std::rc::Rc;
+use crate::renderer::utils::{create_buffer, create_image, create_image_view};
 
 pub struct SimplePass {
-    device: Rc<gpu::Device>,
-    renderer: Rc<gpu::ForwardRenderer>,
+    device: Rc<VkDeviceContext>,
+    renderer: Rc<ForwardRenderer>,
     descriptor_set_layout: vk::DescriptorSetLayout,
     pipeline: vk::Pipeline,
     pipeline_layout: vk::PipelineLayout,
@@ -21,14 +22,11 @@ pub struct SimplePass {
 
     descriptor_sets: Vec<vk::DescriptorSet>,
 
-    objects: Vec<gpu::SimplePassObject>,
+    objects: Vec<SimplePassObject>,
 }
 
 impl SimplePass {
-    pub fn new(
-        device: Rc<gpu::Device>,
-        renderer: Rc<gpu::ForwardRenderer>,
-    ) -> Self {
+    pub fn new(device: Rc<VkDeviceContext>, renderer: Rc<ForwardRenderer>) -> Self {
         unsafe {
             let descriptor_set_layout = SimplePass::create_descriptor_set_layout(&device);
             let (pipeline, pipeline_layout) =
@@ -60,7 +58,7 @@ impl SimplePass {
         }
     }
 
-    pub fn add_object(&mut self, object: gpu::SimplePassObject) {
+    pub fn add_object(&mut self, object: SimplePassObject) {
         self.objects.push(object);
     }
 
@@ -168,7 +166,8 @@ impl SimplePass {
         let pixels = image_rgba8.into_raw();
         let image_size = (pixels.len() * size_of::<u8>()) as vk::DeviceSize;
 
-        let (staging_buffer, staging_memory, _) = self.device.create_buffer(
+        let (staging_buffer, staging_memory, _) = create_buffer(
+            &self.device,
             image_size,
             vk::BufferUsageFlags::TRANSFER_SRC,
             vk::MemoryPropertyFlags::HOST_COHERENT | vk::MemoryPropertyFlags::HOST_VISIBLE,
@@ -187,7 +186,8 @@ impl SimplePass {
         align.copy_from_slice(&pixels);
         self.device.device.unmap_memory(staging_memory);
 
-        let (image, memory) = self.device.create_image(
+        let (image, memory) = create_image(
+            &self.device,
             width,
             height,
             mip_levels,
@@ -232,7 +232,8 @@ impl SimplePass {
             self.device.device.destroy_buffer(staging_buffer, None);
         }
 
-        let image_view = self.device.create_image_view(
+        let image_view = create_image_view(
+            &self.device.device,
             image,
             vk::Format::R8G8B8A8_SRGB,
             vk::ImageAspectFlags::COLOR,
@@ -276,15 +277,15 @@ impl SimplePass {
         usage: vk::BufferUsageFlags,
     ) -> (vk::Buffer, vk::DeviceMemory) {
         let buffer_size = (size_of::<T>() * array.len()) as vk::DeviceSize;
-        let (staging_buffer, staging_memory, _) = self.device.create_buffer(
+        let (staging_buffer, staging_memory, _) = create_buffer(
+            &self.device,
             buffer_size,
             vk::BufferUsageFlags::TRANSFER_SRC,
             vk::MemoryPropertyFlags::HOST_COHERENT | vk::MemoryPropertyFlags::HOST_VISIBLE,
         );
 
         let staging_memory_mapped = self
-            .device
-            .device
+            .device.device
             .map_memory(staging_memory, 0, buffer_size, vk::MemoryMapFlags::empty())
             .expect("failed to map buffer staging memory!");
         let mut align = ash::util::Align::new(
@@ -295,7 +296,8 @@ impl SimplePass {
         align.copy_from_slice(array);
         self.device.device.unmap_memory(staging_memory);
 
-        let (buffer, buffer_memory, _) = self.device.create_buffer(
+        let (buffer, buffer_memory, _) = create_buffer(
+            &self.device,
             buffer_size,
             vk::BufferUsageFlags::TRANSFER_DST | usage,
             vk::MemoryPropertyFlags::DEVICE_LOCAL,
@@ -312,7 +314,7 @@ impl SimplePass {
         (buffer, buffer_memory)
     }
 
-    unsafe fn create_descriptor_set_layout(device: &gpu::Device) -> vk::DescriptorSetLayout {
+    unsafe fn create_descriptor_set_layout(device: &VkDeviceContext) -> vk::DescriptorSetLayout {
         let uniform_layout_binding = vk::DescriptorSetLayoutBinding {
             binding: 0,
             descriptor_type: vk::DescriptorType::UNIFORM_BUFFER,
@@ -344,15 +346,14 @@ impl SimplePass {
         ];
         let create_info = vk::DescriptorSetLayoutCreateInfo::default().bindings(&bindings);
 
-        device
-            .device
+        device.device
             .create_descriptor_set_layout(&create_info, None)
             .expect("failed to create descriptor set layout!")
     }
 
     unsafe fn create_pipeline(
-        device: &gpu::Device,
-        renderer: &gpu::ForwardRenderer,
+        device: &VkDeviceContext,
+        renderer: &ForwardRenderer,
         descriptor_set_layout: vk::DescriptorSetLayout,
     ) -> (vk::Pipeline, vk::PipelineLayout) {
         // The Vulkan SDK includes libshaderc, which is a library to compile GLSL code to SPIR-V from within your program.
@@ -497,22 +498,22 @@ impl SimplePass {
     }
 
     unsafe fn create_uniform_buffers(
-        device: &gpu::Device,
+        device: &VkDeviceContext,
     ) -> (Vec<vk::Buffer>, Vec<vk::DeviceMemory>, Vec<*mut c_void>) {
         let buffer_size = size_of::<UniformBufferObject>() as vk::DeviceSize;
         let mut buffers = Vec::new();
         let mut memories = Vec::new();
         let mut memories_mapped = Vec::new();
 
-        for _ in 0..gpu::ForwardRenderer::MAX_FRAMES_IN_FLIGHT {
-            let (buffer, memory, _) = device.create_buffer(
+        for _ in 0..ForwardRenderer::MAX_FRAMES_IN_FLIGHT {
+            let (buffer, memory, _) = create_buffer(
+                device,
                 buffer_size,
                 vk::BufferUsageFlags::UNIFORM_BUFFER,
                 vk::MemoryPropertyFlags::HOST_VISIBLE | vk::MemoryPropertyFlags::HOST_COHERENT,
             );
 
-            let memory_mapped = device
-                .device
+            let memory_mapped = device.device
                 .map_memory(memory, 0, buffer_size, vk::MemoryMapFlags::empty())
                 .expect("failed to map buffer memory!");
 
@@ -525,12 +526,12 @@ impl SimplePass {
     }
 
     unsafe fn create_descriptor_sets(
-        device: &gpu::Device,
-        renderer: &gpu::ForwardRenderer,
+        device: &VkDeviceContext,
+        renderer: &ForwardRenderer,
         layout: vk::DescriptorSetLayout,
         uniform_buffers: &Vec<vk::Buffer>,
     ) -> Vec<vk::DescriptorSet> {
-        let layouts = [layout; gpu::ForwardRenderer::MAX_FRAMES_IN_FLIGHT as usize];
+        let layouts = [layout; ForwardRenderer::MAX_FRAMES_IN_FLIGHT as usize];
         let allocate_info = vk::DescriptorSetAllocateInfo::default()
             .descriptor_pool(renderer.descriptor_pool)
             .set_layouts(&layouts);
@@ -566,8 +567,10 @@ impl Drop for SimplePass {
         unsafe {
             let device = &self.device.device;
             device.destroy_pipeline(self.pipeline, None);
-            device.destroy_descriptor_set_layout(self.descriptor_set_layout, None);
-            device.destroy_pipeline_layout(self.pipeline_layout, None);
+            device
+                .destroy_descriptor_set_layout(self.descriptor_set_layout, None);
+            device
+                .destroy_pipeline_layout(self.pipeline_layout, None);
 
             self.uniform_buffers.iter().for_each(|buffer| {
                 device.destroy_buffer(*buffer, None);

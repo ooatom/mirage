@@ -1,11 +1,11 @@
-use crate::gpu;
+use super::*;
 use crate::Assets;
 use ash::vk;
 use std::io::Cursor;
 use tobj::LoadError;
 
 pub struct SimplePassObject {
-    pub vertices: Vec<gpu::simple_pass::Vertex>,
+    pub vertices: Vec<simple_pass::Vertex>,
     pub indices: Vec<u32>,
 
     pub vertex_buffer: vk::Buffer,
@@ -20,7 +20,7 @@ pub struct SimplePassObject {
 }
 
 impl SimplePassObject {
-    pub fn new(pass: &gpu::SimplePass) -> Self {
+    pub fn new(pass: &SimplePass) -> Self {
         unsafe {
             let (texture_image, texture_image_memory, texture_image_view, texture_image_sampler) =
                 pass.create_texture_image("assets/texture.jpg");
@@ -49,7 +49,7 @@ impl SimplePassObject {
     }
 
     #[allow(dead_code)]
-    fn load_model() -> (Vec<gpu::simple_pass::Vertex>, Vec<u32>) {
+    fn load_model() -> (Vec<simple_pass::Vertex>, Vec<u32>) {
         let mut buffer = Cursor::new(Assets::get("test_2d.obj").unwrap().data);
         let (models, _) = tobj::load_obj_buf(&mut buffer, &tobj::GPU_LOAD_OPTIONS, |mat_path| {
             let path = Assets::get(mat_path.to_str().unwrap());
@@ -69,7 +69,7 @@ impl SimplePassObject {
         let mut vertices = Vec::with_capacity(vertex_count);
 
         for i in 0..vertex_count {
-            let vertex = gpu::simple_pass::Vertex {
+            let vertex = simple_pass::Vertex {
                 position: [
                     mesh.positions[i * 3],
                     mesh.positions[i * 3 + 1],
@@ -87,7 +87,7 @@ impl SimplePassObject {
     }
 
     #[allow(dead_code)]
-    fn create_simple_data() -> (Vec<gpu::simple_pass::Vertex>, Vec<u32>) {
+    fn create_simple_data() -> (Vec<simple_pass::Vertex>, Vec<u32>) {
         let indices = vec![0, 1, 2, 0, 2, 3];
 
         let vertices = [
@@ -96,7 +96,7 @@ impl SimplePassObject {
             [0.5, 0.5, 0.0, 0.0, 0.0, 1.0, 1.0, 0.0],
             [0.5, -0.5, 0.0, 1.0, 1.0, 1.0, 0.0, 0.0],
         ]
-        .map(|data| gpu::simple_pass::Vertex {
+        .map(|data| simple_pass::Vertex {
             position: [data[0], data[1], data[2]],
             color: [data[3], data[4], data[5]],
             uv: [data[6], data[7]],
