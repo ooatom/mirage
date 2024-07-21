@@ -42,6 +42,24 @@ impl Default for Vec2 {
     }
 }
 
+impl From<[f32; 3]> for Vec2 {
+    fn from(value: [f32; 3]) -> Self {
+        Self {
+            x: value[0],
+            y: value[1],
+        }
+    }
+}
+
+impl From<[f32; 4]> for Vec2 {
+    fn from(value: [f32; 4]) -> Self {
+        Self {
+            x: value[0],
+            y: value[1],
+        }
+    }
+}
+
 impl From<Vec3> for Vec2 {
     #[inline]
     fn from(value: Vec3) -> Self {

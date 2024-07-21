@@ -1,5 +1,6 @@
 use crate::math::{Vec2, Vec4};
 use std::ops::{Add, Div, Mul, Neg, Sub};
+use std::usize::MAX;
 
 #[repr(C)]
 #[derive(Debug, Copy, Clone)]
@@ -30,6 +31,16 @@ impl Vec3 {
     }
 
     #[inline]
+    pub fn normalize(&self) -> Self {
+        let denominator = 1.0 / self.len_sq().sqrt();
+        Self {
+            x: self.x * denominator,
+            y: self.y * denominator,
+            z: self.z * denominator,
+        }
+    }
+
+    #[inline]
     pub fn len(&self) -> f32 {
         self.len_sq().sqrt()
     }
@@ -47,6 +58,36 @@ impl Default for Vec3 {
             x: 0.0,
             y: 0.0,
             z: 0.0,
+        }
+    }
+}
+
+impl From<[f32; 2]> for Vec3 {
+    fn from(value: [f32; 2]) -> Self {
+        Self {
+            x: value[0],
+            y: value[1],
+            z: 0.0,
+        }
+    }
+}
+
+impl From<[f32; 3]> for Vec3 {
+    fn from(value: [f32; 3]) -> Self {
+        Self {
+            x: value[0],
+            y: value[1],
+            z: value[2],
+        }
+    }
+}
+
+impl From<[f32; 4]> for Vec3 {
+    fn from(value: [f32; 4]) -> Self {
+        Self {
+            x: value[0],
+            y: value[1],
+            z: value[2],
         }
     }
 }

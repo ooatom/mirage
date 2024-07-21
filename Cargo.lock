@@ -988,6 +988,7 @@ dependencies = [
  "image",
  "log",
  "naga",
+ "num-traits",
  "raw-window-handle",
  "regex",
  "rust-embed",

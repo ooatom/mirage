@@ -16,6 +16,7 @@ tobj = "4.0.1"
 rust-embed = { version = "8.2.0", features = ["interpolate-folder-path"] }
 naga = "0.20.0"
 regex = "1.10.3"
+num-traits = "0.2.19"
 
 [build-dependencies]
 regex = "1.10.3"

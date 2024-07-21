@@ -1,13 +1,15 @@
 use super::*;
 use crate::Shaders;
+use std::f32::consts::PI;
 
+use crate::math::{Mat4, Vec3};
+use crate::renderer::utils::{create_buffer, create_image, create_image_view};
 use ash::vk;
 use image;
 use std::ffi::{c_void, CStr};
 use std::io::Cursor;
 use std::mem::{align_of, size_of};
 use std::rc::Rc;
-use crate::renderer::utils::{create_buffer, create_image, create_image_view};
 
 pub struct SimplePass {
     device: Rc<VkDeviceContext>,
@@ -93,25 +95,19 @@ impl SimplePass {
 
         // let aspect = self.swapchain_properties.extent.width as f32
         //     / self.swapchain_properties.extent.height as f32;
-        // let ubo = UniformBufferObject {
-        //     model: Matrix4::from_angle_x(Deg(270.0)),
-        //     view: Matrix4::look_at_rh(
-        //         self.camera.position(),
-        //         Point3::new(0.0, 0.0, 0.0),
-        //         Vector3::new(0.0, 1.0, 0.0),
-        //     ),
-        //     proj: math::perspective(Deg(45.0), aspect, 0.1, 10.0),
-        // };
+        let model =
+            Mat4::translate(Vec3::new(0.0, 0.0, -0.9)) * Mat4::scale(Vec3::new(5.0, 5.0, 5.0));
+        let view = Mat4::look_at_rh(
+            Vec3::new(0.0, 10.0, 10.0),
+            Vec3::new(0.0, 0.0, 0.0),
+            Vec3::new(0.0, 1.0, 0.0),
+        );
+        // let projection = Mat4::orthographic_rh(-2.0, 2.0, -2.0, 2.0, 0.01, 100.0);
+        let projection = Mat4::perspective_reversed_z_infinite_rh(PI / 2.0, 1.0, 0.01);
         let ubo = UniformBufferObject {
-            model: [
-                1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0,
-            ],
-            view: [
-                1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0,
-            ],
-            projection: [
-                1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0,
-            ],
+            model,
+            view,
+            projection,
         };
         unsafe {
             let mut align = ash::util::Align::new(
@@ -285,7 +281,8 @@ impl SimplePass {
         );
 
         let staging_memory_mapped = self
-            .device.device
+            .device
+            .device
             .map_memory(staging_memory, 0, buffer_size, vk::MemoryMapFlags::empty())
             .expect("failed to map buffer staging memory!");
         let mut align = ash::util::Align::new(
@@ -346,7 +343,8 @@ impl SimplePass {
         ];
         let create_info = vk::DescriptorSetLayoutCreateInfo::default().bindings(&bindings);
 
-        device.device
+        device
+            .device
             .create_descriptor_set_layout(&create_info, None)
             .expect("failed to create descriptor set layout!")
     }
@@ -414,7 +412,7 @@ impl SimplePass {
             .scissor_count(1);
 
         let rasterization_state = vk::PipelineRasterizationStateCreateInfo::default()
-            .cull_mode(vk::CullModeFlags::BACK)
+            .cull_mode(vk::CullModeFlags::NONE)
             .front_face(vk::FrontFace::COUNTER_CLOCKWISE)
             .polygon_mode(vk::PolygonMode::FILL)
             .line_width(1.0)
@@ -513,7 +511,8 @@ impl SimplePass {
                 vk::MemoryPropertyFlags::HOST_VISIBLE | vk::MemoryPropertyFlags::HOST_COHERENT,
             );
 
-            let memory_mapped = device.device
+            let memory_mapped = device
+                .device
                 .map_memory(memory, 0, buffer_size, vk::MemoryMapFlags::empty())
                 .expect("failed to map buffer memory!");
 
@@ -567,10 +566,8 @@ impl Drop for SimplePass {
         unsafe {
             let device = &self.device.device;
             device.destroy_pipeline(self.pipeline, None);
-            device
-                .destroy_descriptor_set_layout(self.descriptor_set_layout, None);
-            device
-                .destroy_pipeline_layout(self.pipeline_layout, None);
+            device.destroy_descriptor_set_layout(self.descriptor_set_layout, None);
+            device.destroy_pipeline_layout(self.pipeline_layout, None);
 
             self.uniform_buffers.iter().for_each(|buffer| {
                 device.destroy_buffer(*buffer, None);
@@ -642,7 +639,7 @@ impl Vertex {
 #[repr(C)]
 #[derive(Copy, Clone, PartialEq)]
 struct UniformBufferObject {
-    pub model: [f32; 16],
-    pub view: [f32; 16],
-    pub projection: [f32; 16],
+    pub model: Mat4,
+    pub view: Mat4,
+    pub projection: Mat4,
 }

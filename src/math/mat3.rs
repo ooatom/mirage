@@ -126,9 +126,9 @@ impl From<Mat4> for Mat3 {
     #[inline]
     fn from(value: Mat4) -> Self {
         Self {
-            c0: Vec3::from(value.c0),
-            c1: Vec3::from(value.c1),
-            c2: Vec3::from(value.c2),
+            c0: Vec3::from(value.col(0)),
+            c1: Vec3::from(value.col(1)),
+            c2: Vec3::from(value.col(2)),
         }
     }
 }
