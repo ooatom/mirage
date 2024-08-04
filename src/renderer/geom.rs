@@ -1,5 +1,5 @@
-use super::vertex::Vertex;
-use crate::renderer::GPU;
+use super::*;
+use crate::gpu::GPU;
 use crate::Assets;
 use ash::vk;
 use std::io::Cursor;

@@ -1,4 +1,5 @@
-use super::renderer::*;
+use crate::gpu::*;
+use crate::renderer::*;
 use ash::vk;
 use raw_window_handle;
 use std::cell::Cell;

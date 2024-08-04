@@ -1,5 +1,6 @@
+use super::*;
+use crate::gpu::GPU;
 use crate::math::{Mat4, Vec3};
-use crate::renderer::{Geom, Shading, GPU};
 use ash::vk;
 
 pub struct Object {

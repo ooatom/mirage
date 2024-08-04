@@ -1,6 +1,5 @@
 use super::*;
-use crate::renderer::shading_def::ShadingDesc;
-use crate::renderer::swap_chain::SwapChain;
+use crate::renderer::LayoutDesc;
 use ash::vk;
 use ash::vk::BufferCopy;
 use std::ffi::c_void;
@@ -12,7 +11,8 @@ pub struct GPU {
     pub context: VkContext,
     pub device_context: VkDeviceContext,
     pub swap_chain: SwapChain,
-    pub transient_command_pool: vk::CommandPool,
+
+    transient_command_pool: vk::CommandPool,
 }
 
 impl GPU {
@@ -43,10 +43,10 @@ impl GPU {
 
     pub fn create_descriptor_set_layout(
         &self,
-        descs: &Vec<ShadingDesc>,
+        layouts: Vec<LayoutDesc>,
     ) -> vk::DescriptorSetLayout {
         unsafe {
-            let bindings = descs
+            let bindings = layouts
                 .iter()
                 .map(|&desc| vk::DescriptorSetLayoutBinding {
                     binding: desc.binding,

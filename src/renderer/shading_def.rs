@@ -1,15 +1,8 @@
+use super::*;
+use crate::gpu::LayoutDesc;
 use crate::Shaders;
 use ash::vk;
 use std::borrow::Cow;
-
-#[derive(Copy, Clone)]
-pub struct ShadingDesc {
-    pub name: &'static str,
-    pub desc_type: vk::DescriptorType,
-    pub binding: u32,
-    pub stage: vk::ShaderStageFlags,
-    pub count: u32,
-}
 
 pub enum ShadingMode {
     Unlit,
@@ -22,7 +15,7 @@ pub struct ShadingDef {
     pub mode: ShadingMode,
     pub depth_test: bool,
     pub depth_write: bool,
-    pub descs: Vec<ShadingDesc>,
+    pub layouts: Vec<LayoutDesc>,
 }
 
 impl ShadingDef {
@@ -34,7 +27,7 @@ impl ShadingDef {
             mode: ShadingMode::Unlit,
             depth_test: false,
             depth_write: false,
-            descs: vec![
+            layouts: vec![
                 // ShadingDesc {
                 //     name: "model",
                 //     binding: 1,
@@ -42,14 +35,14 @@ impl ShadingDef {
                 //     count: 1,
                 //     stage: vk::ShaderStageFlags::ALL,
                 // },
-                ShadingDesc {
+                LayoutDesc {
                     name: "image",
                     binding: 0,
                     desc_type: vk::DescriptorType::SAMPLED_IMAGE,
                     count: 1,
                     stage: vk::ShaderStageFlags::FRAGMENT,
                 },
-                ShadingDesc {
+                LayoutDesc {
                     name: "sampler",
                     binding: 1,
                     desc_type: vk::DescriptorType::SAMPLER,

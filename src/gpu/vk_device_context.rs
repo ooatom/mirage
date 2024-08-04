@@ -1,5 +1,4 @@
-use super::VkContext;
-use crate::renderer::swap_chain::SwapChain;
+use super::*;
 use ash::vk;
 use std::collections::{BTreeMap, HashSet};
 use std::ffi::CStr;

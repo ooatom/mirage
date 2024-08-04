@@ -1,8 +1,6 @@
 use super::*;
+use crate::gpu::{LayoutDesc, GPU};
 use crate::math::{Mat4, Vec3};
-use crate::renderer::shading::Shading;
-use crate::renderer::shading_def::ShadingDesc;
-use crate::renderer::vertex::Vertex;
 use ash::vk;
 use std::f32::consts::PI;
 use std::ffi::{c_void, CStr};
@@ -44,7 +42,7 @@ pub struct ForwardRenderer {
 
 impl ForwardRenderer {
     pub const FRAMES_IN_FLIGHT: u32 = 2;
-    pub const FORWARD_RENDERER_DESC: [ShadingDesc; 1] = [ShadingDesc {
+    pub const FORWARD_RENDERER_DESC: [LayoutDesc; 1] = [LayoutDesc {
         name: "ubo",
         binding: 0,
         desc_type: vk::DescriptorType::UNIFORM_BUFFER,
@@ -64,7 +62,8 @@ impl ForwardRenderer {
                 Self::create_framebuffers(gpu, render_pass, color_image_view, depth_image_view);
 
             let descriptor_set_layout =
-                gpu.create_descriptor_set_layout(&ForwardRenderer::FORWARD_RENDERER_DESC.to_vec());
+                gpu.create_descriptor_set_layout(ForwardRenderer::FORWARD_RENDERER_DESC.to_vec());
+
             let descriptor_sets = gpu.create_descriptor_sets(
                 descriptor_pool,
                 &vec![descriptor_set_layout; Self::FRAMES_IN_FLIGHT as usize],
@@ -238,7 +237,7 @@ impl ForwardRenderer {
         let shader_code = ash::util::read_spv(&mut buffer).unwrap();
         let shader_module = self.gpu.create_shader_module(&shader_code);
 
-        let descriptor_set_layout = self.gpu.create_descriptor_set_layout(&def.descs);
+        let descriptor_set_layout = self.gpu.create_descriptor_set_layout(def.layouts.to_vec());
         let (pipeline, pipeline_layout) =
             self.create_pipeline(def, shader_module, descriptor_set_layout);
 
