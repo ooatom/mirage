@@ -6,9 +6,11 @@ struct UniformBufferObject {
 
 @group(0) @binding(0)
 var<uniform> ubo: UniformBufferObject;
-@group(0) @binding(1)
+//@group(0) @binding(1)
+//var object: Object;
+@group(1) @binding(0)
 var colorTexture: texture_2d<f32>;
-@group(0) @binding(2)
+@group(1) @binding(1)
 var colorTextureSampler: sampler;
 
 struct VertexInput {

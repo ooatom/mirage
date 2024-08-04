@@ -42,7 +42,7 @@ impl ApplicationHandler for Application {
                 event_loop.exit();
             }
             WindowEvent::RedrawRequested => {
-                self.mirage.as_ref().unwrap().render();
+                self.mirage.as_mut().unwrap().render();
             }
             // WindowEvent::Resized(size) => {
             //

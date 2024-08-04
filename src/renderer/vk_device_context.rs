@@ -1,9 +1,8 @@
 use super::VkContext;
+use crate::renderer::swap_chain::SwapChain;
 use ash::vk;
 use std::collections::{BTreeMap, HashSet};
 use std::ffi::CStr;
-use std::rc::{Rc, Weak};
-use crate::renderer::utils::create_image_view;
 
 const DEVICE_EXTENSIONS: &[&CStr] = &[
     // The Vulkan spec states: If the VK_KHR_portability_subset extension is included in pProperties
@@ -15,35 +14,24 @@ const DEVICE_EXTENSIONS: &[&CStr] = &[
 ];
 
 pub struct VkDeviceContext {
-    context: Rc<VkContext>,
-
     pub physical_device: vk::PhysicalDevice,
-    pub device: ash::Device,
-    pub swap_chain_fn: Option<ash::khr::swapchain::Device>,
-    pub swap_chain: Option<vk::SwapchainKHR>,
-
     pub physical_device_properties: vk::PhysicalDeviceProperties,
     pub physical_device_memory_properties: vk::PhysicalDeviceMemoryProperties,
     pub graphic_queue_family: Option<u32>,
     pub present_queue_family: Option<u32>,
     pub compute_queue_family: Option<u32>,
+    pub msaa_samples: vk::SampleCountFlags,
+
+    pub device: ash::Device,
     pub graphic_queue: Option<vk::Queue>,
     pub present_queue: Option<vk::Queue>,
     pub compute_queue: Option<vk::Queue>,
-
-    pub msaa_samples: vk::SampleCountFlags,
-    pub format: vk::Format,
-    pub color_space: vk::ColorSpaceKHR,
-    pub present_mode: vk::PresentModeKHR,
-    pub extent: vk::Extent2D,
-    pub images: Vec<vk::Image>,
-    pub image_views: Vec<vk::ImageView>,
 }
 
 impl VkDeviceContext {
-    pub fn new(context: Rc<VkContext>) -> Self {
+    pub fn new(context: &VkContext) -> Self {
         unsafe {
-            let physical_device = Self::pick_physical_device(&context);
+            let physical_device = Self::pick_physical_device(context);
             let physical_device_properties = context
                 .instance
                 .get_physical_device_properties(physical_device);
@@ -63,29 +51,9 @@ impl VkDeviceContext {
                 compute_queue_family,
             );
 
-            let (swap_chain_fn, swap_chain, surface_format, present_mode, extent) =
-                Self::create_swap_chain(
-                    &context,
-                    &device,
-                    physical_device,
-                    graphic_queue_family,
-                    present_queue_family,
-                    compute_queue_family,
-                );
-            //delay
-            let (images, image_views) = Self::get_swap_chain_images(
-                &device,
-                &swap_chain_fn,
-                swap_chain,
-                surface_format.format,
-            );
-
             Self {
-                context,
                 physical_device,
                 device,
-                swap_chain_fn: Some(swap_chain_fn),
-                swap_chain: Some(swap_chain),
                 physical_device_properties,
                 physical_device_memory_properties,
 
@@ -96,29 +64,182 @@ impl VkDeviceContext {
                 present_queue,
                 compute_queue,
 
-                extent,
-                format: surface_format.format,
-                color_space: surface_format.color_space,
-                present_mode,
-                images,
-                image_views,
                 msaa_samples,
             }
         }
     }
 
-    pub unsafe fn create_shader_module(&self, code: &[u32]) -> vk::ShaderModule {
-        let create_info = vk::ShaderModuleCreateInfo::default().code(code);
+    pub unsafe fn create_buffer(
+        &self,
+        size: vk::DeviceSize,
+        usage: vk::BufferUsageFlags,
+        memory_properties: vk::MemoryPropertyFlags,
+    ) -> (vk::Buffer, vk::DeviceMemory, vk::DeviceSize) {
+        let create_info = vk::BufferCreateInfo::default()
+            // The flags parameter is used to configure sparse buffer memory,
+            // which is not relevant right now. We'll leave it at the default value of 0.
+            // .flags()
+            .size(size)
+            .usage(usage)
+            .sharing_mode(vk::SharingMode::EXCLUSIVE);
 
+        let buffer = self
+            .device
+            .create_buffer(&create_info, None)
+            .expect("failed to create buffer!");
+
+        let requirements = self.device.get_buffer_memory_requirements(buffer);
+        let allocate_info = vk::MemoryAllocateInfo::default()
+            .allocation_size(requirements.size)
+            .memory_type_index(
+                self.find_memory_type_index(requirements.memory_type_bits, memory_properties),
+            );
+
+        let buffer_memory = self
+            .device
+            .allocate_memory(&allocate_info, None)
+            .expect("failed to allocate memory!");
+
+        // If the offset is non-zero, then it is required to be divisible by memRequirements.alignment.
         self.device
-            .create_shader_module(&create_info, None)
-            .expect("failed to create shader module!")
+            .bind_buffer_memory(buffer, buffer_memory, 0)
+            .expect("failed to bind buffer memory!");
+
+        (buffer, buffer_memory, requirements.size)
     }
 
-    pub unsafe fn get_format_properties(&self, format: vk::Format) -> vk::FormatProperties {
-        self.context
-            .instance
-            .get_physical_device_format_properties(self.physical_device, format)
+    pub unsafe fn create_image(
+        &self,
+        width: u32,
+        height: u32,
+        mip_levels: u32,
+        samples: vk::SampleCountFlags,
+        format: vk::Format,
+        tiling: vk::ImageTiling,
+        usage: vk::ImageUsageFlags,
+        memory_properties: vk::MemoryPropertyFlags,
+    ) -> (vk::Image, vk::DeviceMemory) {
+        // https://www.reddit.com/r/vulkan/comments/48cvzq/image_layouts/
+        // Image tiling is the addressing layout of texels within an image. This is currently opaque, and it is not defined when you access it using the CPU.
+        // The reason GPUs like image tiling to be "OPTIMAL" is for texel filtering. Consider a simple linear filter, the resulting value will have four texels contributing from a 2x2 quad.
+        // If the texels were in "LINEAR" tiling, the two texels on the lower row would be very far away in memory from the two texels on the upper row.
+        // In "OPTIMAL" tiling texel addresses are closer based on x and y distance.
+        //
+        // Image layouts are likely (though they don't have to be) used for internal transparent compression of images when in use by the GPU.
+        // This is NOT a lossy block compressed format, it is an internal format that is used by the GPU to save bandwidth! It is unlikely there will be a "standard" compression format that can be exposed to the CPU.
+        // The reason you need to transition your images from one layout to another is some hardware may only be able to access the compressed data from certain hardware blocks.
+        // As a not-real example, imagine I could render to this compressed format and sample to it, but I could not perform image writes to it -
+        // if you keep the image in IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL or IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL the driver knows that it can keep the image compressed and the GPU gets a big win.
+        // If you transition the image to IMAGE_LAYOUT_GENERAL the driver cannot guarantee the image can be compressed and may have to decompress it in place.
+
+        let create_info = vk::ImageCreateInfo::default()
+            .image_type(vk::ImageType::TYPE_2D)
+            .extent(vk::Extent3D {
+                width,
+                height,
+                depth: 1,
+            })
+            .format(format)
+            .mip_levels(mip_levels)
+            .array_layers(1)
+            .sharing_mode(vk::SharingMode::EXCLUSIVE)
+            // .queue_family_indices()
+            // VK_IMAGE_TILING_LINEAR: Texels are laid out in row-major order like our pixels array
+            // VK_IMAGE_TILING_OPTIMAL: Texels are laid out in an implementation defined order for optimal access
+            .tiling(tiling)
+            // VK_IMAGE_LAYOUT_UNDEFINED: Not usable by the GPU and the very first transition will discard the texels.
+            // VK_IMAGE_LAYOUT_PREINITIALIZED: Not usable by the GPU, but the first transition will preserve the texels.
+            //      One example, however, would be if you wanted to use an image as a staging image in combination with the VK_IMAGE_TILING_LINEAR layout.
+            .initial_layout(vk::ImageLayout::UNDEFINED)
+            .usage(usage)
+            .samples(samples);
+        // There are some optional flags for images that are related to sparse images. Sparse images are images where only certain regions are actually backed by memory.
+        // If you were using a 3D texture for a voxel terrain, for example, then you could use this to avoid allocating memory to store large volumes of "air" values.
+        // .flags()
+
+        let image = self
+            .device
+            .create_image(&create_info, None)
+            .expect("failed to create image!");
+
+        let memory_requirements = self.device.get_image_memory_requirements(image);
+
+        let allocate_info = vk::MemoryAllocateInfo {
+            allocation_size: memory_requirements.size,
+            memory_type_index: self
+                .find_memory_type_index(memory_requirements.memory_type_bits, memory_properties),
+            ..Default::default()
+        };
+
+        let image_memory = self
+            .device
+            .allocate_memory(&allocate_info, None)
+            .expect("failed to allocate memory!");
+        self.device
+            .bind_image_memory(image, image_memory, 0)
+            .expect("failed to bind image memory!");
+
+        (image, image_memory)
+    }
+
+    pub unsafe fn create_image_view(
+        &self,
+        image: vk::Image,
+        format: vk::Format,
+        aspect_flags: vk::ImageAspectFlags,
+        mips: u32,
+    ) -> vk::ImageView {
+        let create_info = vk::ImageViewCreateInfo::default()
+            .image(image)
+            .view_type(vk::ImageViewType::TYPE_2D)
+            .format(format)
+            .components(vk::ComponentMapping {
+                r: vk::ComponentSwizzle::IDENTITY,
+                g: vk::ComponentSwizzle::IDENTITY,
+                b: vk::ComponentSwizzle::IDENTITY,
+                a: vk::ComponentSwizzle::IDENTITY,
+            })
+            .subresource_range(vk::ImageSubresourceRange {
+                // https://github.com/KhronosGroup/Vulkan-Guide/blob/main/chapters/formats.adoc
+                // The VkImageAspectFlagBits values are used to represent which part of the data is being accessed
+                // for operations such as clears and copies.
+                // Color - Format with a R, G, B or A component and accessed with the VK_IMAGE_ASPECT_COLOR_BIT
+                // Depth and Stencil - Formats with a D or S component. These formats are considered opaque and have
+                // special rules when it comes to copy to and from depth/stencil images.
+                // Some formats have both a depth and stencil component and can be accessed separately with
+                // VK_IMAGE_ASPECT_DEPTH_BIT and VK_IMAGE_ASPECT_STENCIL_BIT.
+                aspect_mask: aspect_flags,
+                base_array_layer: 0,
+                layer_count: 1,
+                base_mip_level: 0,
+                level_count: mips,
+            });
+
+        self.device
+            .create_image_view(&create_info, None)
+            .expect("failed to create image view!")
+    }
+
+    fn find_memory_type_index(
+        &self,
+        type_bits: u32,
+        property_flags: vk::MemoryPropertyFlags,
+    ) -> u32 {
+        for i in 0..self.physical_device_memory_properties.memory_type_count {
+            if type_bits & (1 << i) == 0 {
+                continue;
+            }
+            if !self.physical_device_memory_properties.memory_types[i as usize]
+                .property_flags
+                .contains(property_flags)
+            {
+                continue;
+            }
+
+            return i;
+        }
+
+        panic!("failed to find suitable memory type!")
     }
 
     unsafe fn create_logical_device(
@@ -250,7 +371,8 @@ impl VkDeviceContext {
         {
             score = 0;
         } else {
-            let (_, formats, present_modes) = Self::query_surface_support(context, physical_device);
+            let (_, formats, present_modes) =
+                SwapChain::query_surface_support(context, physical_device);
             if formats.is_empty() || present_modes.is_empty() {
                 score = 0;
             }
@@ -353,30 +475,6 @@ impl VkDeviceContext {
             .all(|extension| supported_extensions.contains(extension))
     }
 
-    unsafe fn query_surface_support(
-        context: &VkContext,
-        physical_device: vk::PhysicalDevice,
-    ) -> (
-        vk::SurfaceCapabilitiesKHR,
-        Vec<vk::SurfaceFormatKHR>,
-        Vec<vk::PresentModeKHR>,
-    ) {
-        let surface_fn = context.surface_fn.as_ref().unwrap();
-        let surface = context.surface.unwrap();
-
-        let capabilities = surface_fn
-            .get_physical_device_surface_capabilities(physical_device, surface)
-            .unwrap();
-        let formats = surface_fn
-            .get_physical_device_surface_formats(physical_device, surface)
-            .unwrap();
-        let present_modes = surface_fn
-            .get_physical_device_surface_present_modes(physical_device, surface)
-            .unwrap();
-
-        (capabilities, formats, present_modes)
-    }
-
     unsafe fn get_max_usable_sample_count(
         properties: &vk::PhysicalDeviceProperties,
     ) -> vk::SampleCountFlags {
@@ -391,167 +489,6 @@ impl VkDeviceContext {
             _ if count.contains(vk::SampleCountFlags::TYPE_4) => vk::SampleCountFlags::TYPE_4,
             _ if count.contains(vk::SampleCountFlags::TYPE_2) => vk::SampleCountFlags::TYPE_2,
             _ => vk::SampleCountFlags::TYPE_1,
-        }
-    }
-
-    unsafe fn create_swap_chain(
-        context: &VkContext,
-        device: &ash::Device,
-        physical_device: vk::PhysicalDevice,
-        graphic_queue_family: Option<u32>,
-        present_queue_family: Option<u32>,
-        compute_queue_family: Option<u32>,
-    ) -> (
-        ash::khr::swapchain::Device,
-        vk::SwapchainKHR,
-        vk::SurfaceFormatKHR,
-        vk::PresentModeKHR,
-        vk::Extent2D,
-    ) {
-        let (surface_capabilities, surface_formats, surface_present_modes) =
-            Self::query_surface_support(context, physical_device);
-
-        let surface_format = Self::choose_surface_format(&surface_formats);
-        let present_mode = Self::choose_surface_present_mode(&surface_present_modes);
-        let extent = Self::choose_surface_extent(context, &surface_capabilities);
-
-        let image_count = (surface_capabilities.min_image_count + 1).clamp(
-            surface_capabilities.min_image_count,
-            surface_capabilities.max_image_count,
-        );
-
-        let pre_transform = if surface_capabilities
-            .supported_transforms
-            .contains(vk::SurfaceTransformFlagsKHR::IDENTITY)
-        {
-            vk::SurfaceTransformFlagsKHR::IDENTITY
-        } else {
-            surface_capabilities.current_transform
-        };
-
-        let mut create_info = vk::SwapchainCreateInfoKHR::default()
-            .surface(context.surface.unwrap())
-            .min_image_count(image_count)
-            .image_format(surface_format.format)
-            .image_color_space(surface_format.color_space)
-            .image_extent(extent)
-            .image_array_layers(1)
-            .image_usage(vk::ImageUsageFlags::COLOR_ATTACHMENT)
-            .pre_transform(pre_transform)
-            .composite_alpha(vk::CompositeAlphaFlagsKHR::OPAQUE)
-            .present_mode(present_mode)
-            .clipped(true);
-        // .old_swapchain(None)
-
-        if graphic_queue_family == present_queue_family {
-            create_info.image_sharing_mode = vk::SharingMode::EXCLUSIVE;
-            create_info.queue_family_index_count = 0;
-            create_info.p_queue_family_indices = std::ptr::null();
-        } else {
-            create_info.image_sharing_mode = vk::SharingMode::CONCURRENT;
-            create_info.queue_family_index_count = 2;
-            create_info.p_queue_family_indices =
-                [graphic_queue_family.unwrap(), present_queue_family.unwrap()].as_ptr();
-        }
-
-        let swap_chain_fn = ash::khr::swapchain::Device::new(&context.instance, &device);
-        let swap_chain = swap_chain_fn
-            .create_swapchain(&create_info, None)
-            .expect("failed to create swap chain!");
-
-        (
-            swap_chain_fn,
-            swap_chain,
-            surface_format,
-            present_mode,
-            extent,
-        )
-    }
-
-    unsafe fn get_swap_chain_images(
-        device: &ash::Device,
-        swap_chain_fn: &ash::khr::swapchain::Device,
-        swap_chain: vk::SwapchainKHR,
-        format: vk::Format,
-    ) -> (Vec<vk::Image>, Vec<vk::ImageView>) {
-        let images = swap_chain_fn
-            .get_swapchain_images(swap_chain)
-            .expect("failed to get swap chain images!");
-
-        let image_views = images
-            .iter()
-            .cloned()
-            .map(|image| {
-                create_image_view(device, image, format, vk::ImageAspectFlags::COLOR, 1)
-            })
-            .collect::<Vec<_>>();
-
-        (images, image_views)
-    }
-
-    fn choose_surface_format(surface_formats: &Vec<vk::SurfaceFormatKHR>) -> vk::SurfaceFormatKHR {
-        surface_formats
-            .iter()
-            .cloned()
-            .find(|&format| {
-                format.format == vk::Format::B8G8R8A8_SRGB
-                    && format.color_space == vk::ColorSpaceKHR::SRGB_NONLINEAR
-            })
-            .unwrap_or(surface_formats[0])
-    }
-
-    fn choose_surface_present_mode(present_modes: &Vec<vk::PresentModeKHR>) -> vk::PresentModeKHR {
-        // VK_PRESENT_MODE_IMMEDIATE_KHR: Images submitted by your application are transferred to the screen right away, which may result in tearing.
-        // VK_PRESENT_MODE_FIFO_KHR: The swap chain is a queue where the display takes an image from the front of the queue when the display is refreshed
-        //  and the program inserts rendered images at the back of the queue. If the queue is full then the program has to wait. This is most similar to
-        //  vertical sync as found in modern games. The moment that the display is refreshed is known as "vertical blank".
-        // VK_PRESENT_MODE_FIFO_RELAXED_KHR: This mode only differs from the previous one if the application is late and the queue was empty at the last
-        //  vertical blank. Instead of waiting for the next vertical blank, the image is transferred right away when it finally arrives. This may result
-        //  in visible tearing.
-        // VK_PRESENT_MODE_MAILBOX_KHR: This is another variation of the second mode. Instead of blocking the application when the queue is full, the
-        //  images that are already queued are simply replaced with the newer ones. This mode can be used to render frames as fast as possible while
-        //  still avoiding tearing, resulting in fewer latency issues than standard vertical sync. This is commonly known as "triple buffering",
-        //  although the existence of three buffers alone does not necessarily mean that the framerate is unlocked.
-        present_modes
-            .iter()
-            .cloned()
-            .find(|&present_mode| present_mode == vk::PresentModeKHR::MAILBOX)
-            .unwrap_or(vk::PresentModeKHR::FIFO)
-    }
-
-    fn choose_surface_extent(
-        context: &VkContext,
-        capabilities: &vk::SurfaceCapabilitiesKHR,
-    ) -> vk::Extent2D {
-        match capabilities.current_extent.width {
-            u32::MAX => {
-                let inner_size = context.window.inner_size();
-                vk::Extent2D {
-                    width: inner_size.width.clamp(
-                        capabilities.min_image_extent.width,
-                        capabilities.max_image_extent.width,
-                    ),
-                    height: inner_size.height.clamp(
-                        capabilities.min_image_extent.height,
-                        capabilities.max_image_extent.height,
-                    ),
-                }
-            }
-            _ => capabilities.current_extent,
-        }
-    }
-}
-
-impl Drop for VkDeviceContext {
-    fn drop(&mut self) {
-        unsafe {
-            self.device.device_wait_idle().unwrap();
-
-            for &image_view in self.image_views.iter() {
-                self.device.destroy_image_view(image_view, None);
-            }
-            self.swap_chain_fn.as_ref().unwrap().destroy_swapchain(self.swap_chain.unwrap(), None);
-            self.device.destroy_device(None);
         }
     }
 }

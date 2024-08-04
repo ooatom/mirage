@@ -199,7 +199,7 @@ impl Mat4 {
      * |        0          0         -1          0        |
      *
      * Infinite perspective
-     *  lim (f -> ∞) n / (f - n) = 0
+     *  lim (f -> ∞)  n / (f - n) = 0
      *  lim (f -> ∞) nf / (f - n) = n
      */
     pub fn orthographic_rh(
@@ -498,3 +498,75 @@ impl From<Quat> for Mat4 {
         Self::default()
     }
 }
+//
+// impl From<Mat2> for Mat4 {
+//     #[inline]
+//     fn from(value: Mat2) -> Self {
+//         Self {
+//             c0: Vec4::from(value.c0),
+//             c1: Vec4::from(value.c1),
+//             c2: Vec4::new(0.0, 0.0, 1.0, 0.0),
+//             c3: Vec4::new(0.0, 0.0, 0.0, 1.0),
+//         }
+//     }
+// }
+//
+// impl From<Mat3> for Mat4 {
+//     #[inline]
+//     fn from(value: Mat3) -> Self {
+//         Self {
+//             c0: Vec4::from(value.c0),
+//             c1: Vec4::from(value.c1),
+//             c2: Vec4::from(value.c2),
+//             c3: Vec4::new(0.0, 0.0, 0.0, 1.0),
+//         }
+//     }
+// }
+//
+// impl Mul<Mat4> for Mat4 {
+//     type Output = Mat4;
+//
+//     #[inline]
+//     fn mul(self, rhs: Mat4) -> Self::Output {
+//         let r0 = self.row(0);
+//         let r1 = self.row(1);
+//         let r2 = self.row(2);
+//         let r3 = self.row(3);
+//
+//         let c0 = rhs.c0;
+//         let c1 = rhs.c1;
+//         let c2 = rhs.c2;
+//         let c3 = rhs.c3;
+//
+//         Self {
+//             c0: Vec4::new(r0.dot(c0), r1.dot(c0), r2.dot(c0), r3.dot(c0)),
+//             c1: Vec4::new(r0.dot(c1), r1.dot(c1), r2.dot(c1), r3.dot(c1)),
+//             c2: Vec4::new(r0.dot(c2), r1.dot(c2), r2.dot(c2), r3.dot(c2)),
+//             c3: Vec4::new(r0.dot(c3), r1.dot(c3), r2.dot(c3), r3.dot(c3)),
+//         }
+//     }
+// }
+//
+// impl Div<Mat4> for Mat4 {
+//     type Output = Mat4;
+//
+//     #[inline]
+//     fn div(self, rhs: Mat4) -> Self::Output {
+//         let r0 = self.row(0);
+//         let r1 = self.row(1);
+//         let r2 = self.row(2);
+//         let r3 = self.row(3);
+//
+//         let c0 = 1.0 / rhs.c0;
+//         let c1 = 1.0 / rhs.c1;
+//         let c2 = 1.0 / rhs.c2;
+//         let c3 = 1.0 / rhs.c3;
+//
+//         Self {
+//             c0: Vec4::new(r0.dot(c0), r1.dot(c0), r2.dot(c0), r3.dot(c0)),
+//             c1: Vec4::new(r0.dot(c1), r1.dot(c1), r2.dot(c1), r3.dot(c1)),
+//             c2: Vec4::new(r0.dot(c2), r1.dot(c2), r2.dot(c2), r3.dot(c2)),
+//             c3: Vec4::new(r0.dot(c3), r1.dot(c3), r2.dot(c3), r3.dot(c3)),
+//         }
+//     }
+// }

@@ -8,8 +8,6 @@ use std::os;
 use std::rc::Rc;
 use winit::window::Window;
 
-use super::VkDeviceContext;
-
 #[cfg(all(debug_assertions))]
 const ENABLE_VALIDATION_LAYERS: bool = true;
 #[cfg(not(debug_assertions))]
@@ -199,19 +197,4 @@ unsafe extern "system" fn vulkan_debug_callback(
     println!("[{message_severity:?}:{message_types:?}] {message_id_name} ({message_id_number}):\n{message}");
 
     vk::FALSE
-}
-
-impl Drop for VkContext {
-    fn drop(&mut self) {
-        unsafe {
-            self.surface_fn.as_ref().unwrap().destroy_surface(self.surface.unwrap(), None);
-            if self.debug_utils_fn.is_some() && self.debug_utils_messenger.is_some() {
-                self.debug_utils_fn
-                    .as_ref()
-                    .unwrap()
-                    .destroy_debug_utils_messenger(self.debug_utils_messenger.unwrap(), None);
-            }
-            self.instance.destroy_instance(None);
-        }
-    }
 }
