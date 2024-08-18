@@ -1,5 +1,4 @@
 use super::*;
-use crate::renderer::LayoutDesc;
 use ash::vk;
 use ash::vk::BufferCopy;
 use std::ffi::c_void;
@@ -43,21 +42,10 @@ impl GPU {
 
     pub fn create_descriptor_set_layout(
         &self,
-        layouts: Vec<LayoutDesc>,
+        bindings: &Vec<vk::DescriptorSetLayoutBinding>,
     ) -> vk::DescriptorSetLayout {
         unsafe {
-            let bindings = layouts
-                .iter()
-                .map(|&desc| vk::DescriptorSetLayoutBinding {
-                    binding: desc.binding,
-                    descriptor_type: desc.desc_type,
-                    descriptor_count: desc.count,
-                    stage_flags: desc.stage,
-                    ..Default::default()
-                })
-                .collect::<Vec<_>>();
-
-            let create_info = vk::DescriptorSetLayoutCreateInfo::default().bindings(&bindings);
+            let create_info = vk::DescriptorSetLayoutCreateInfo::default().bindings(bindings);
             self.device_context
                 .device
                 .create_descriptor_set_layout(&create_info, None)

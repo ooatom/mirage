@@ -5,9 +5,11 @@ use ash::vk;
 use std::io::Cursor;
 use tobj::LoadError;
 
+#[derive(Copy, Clone)]
 pub struct Geom {
-    pub vertices: Vec<Vertex>,
-    pub indices: Vec<u32>,
+    // pub vertices: Vec<Vertex>,
+    // pub indices: Vec<u32>,
+    pub indices_len: usize,
 
     pub vertex_buffer: vk::Buffer,
     pub vertex_buffer_memory: vk::DeviceMemory,
@@ -23,8 +25,9 @@ impl Geom {
             gpu.create_buffer_with_data(&indices, vk::BufferUsageFlags::INDEX_BUFFER);
 
         Self {
-            vertices,
-            indices,
+            // vertices,
+            // indices,
+            indices_len: indices.len(),
 
             vertex_buffer,
             vertex_buffer_memory,

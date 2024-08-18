@@ -1,8 +1,12 @@
 use super::*;
-use crate::gpu::{LayoutDesc, GPU};
-use crate::math::{Mat4, Vec3};
+use crate::gpu::GPU;
+use crate::math::Mat4;
+use crate::renderer::material::Material;
+use crate::renderer::shading::Shading;
+use crate::Shaders;
 use ash::vk;
-use std::f32::consts::PI;
+use std::cell::RefCell;
+use std::collections::HashMap;
 use std::ffi::{c_void, CStr};
 use std::io;
 use std::mem::{align_of, size_of};
@@ -10,10 +14,26 @@ use std::rc::Rc;
 
 #[repr(C)]
 #[derive(Copy, Clone, PartialEq)]
-pub struct UBO {
-    pub model: Mat4,
+pub struct SceneData {
     pub view: Mat4,
     pub projection: Mat4,
+    pub view_projection: Mat4,
+}
+
+#[repr(C)]
+#[derive(Copy, Clone, PartialEq)]
+pub struct ObjectData {
+    pub model: Mat4,
+}
+
+// https://stackoverflow.com/questions/28127165/how-to-convert-struct-to-u8
+unsafe fn any_as_u8_slice<T: Sized>(p: &T) -> &[u8] {
+    ::core::slice::from_raw_parts((p as *const T) as *const u8, ::core::mem::size_of::<T>())
+}
+
+unsafe fn u8_slice_as_any<T>(p: &[u8]) -> &T {
+    assert_eq!(p.len(), ::core::mem::size_of::<T>());
+    &*(p.as_ptr() as *const T)
 }
 
 pub struct ForwardRenderer {
@@ -21,11 +41,15 @@ pub struct ForwardRenderer {
 
     pub view: Mat4,
     pub projection: Mat4,
+    pub pipeline_cache: RefCell<HashMap<u32, Pipeline>>,
+    pub shading_cache: RefCell<HashMap<u32, Shading>>,
 
     pub descriptor_pool: vk::DescriptorPool,
     pub render_pass: vk::RenderPass,
     pub descriptor_set_layout: vk::DescriptorSetLayout,
     pub descriptor_sets: Vec<vk::DescriptorSet>,
+
+    pub depth_reverse_z: bool,
 
     framebuffers: Vec<vk::Framebuffer>,
     color_image: vk::Image,
@@ -42,13 +66,6 @@ pub struct ForwardRenderer {
 
 impl ForwardRenderer {
     pub const FRAMES_IN_FLIGHT: u32 = 2;
-    pub const FORWARD_RENDERER_DESC: [LayoutDesc; 1] = [LayoutDesc {
-        name: "ubo",
-        binding: 0,
-        desc_type: vk::DescriptorType::UNIFORM_BUFFER,
-        count: 1,
-        stage: vk::ShaderStageFlags::VERTEX,
-    }];
 
     pub fn new(gpu: &Rc<GPU>) -> Self {
         unsafe {
@@ -62,7 +79,13 @@ impl ForwardRenderer {
                 Self::create_framebuffers(gpu, render_pass, color_image_view, depth_image_view);
 
             let descriptor_set_layout =
-                gpu.create_descriptor_set_layout(ForwardRenderer::FORWARD_RENDERER_DESC.to_vec());
+                gpu.create_descriptor_set_layout(&vec![vk::DescriptorSetLayoutBinding {
+                    binding: 0,
+                    descriptor_type: vk::DescriptorType::UNIFORM_BUFFER,
+                    descriptor_count: 1,
+                    stage_flags: vk::ShaderStageFlags::ALL_GRAPHICS,
+                    ..Default::default()
+                }]);
 
             let descriptor_sets = gpu.create_descriptor_sets(
                 descriptor_pool,
@@ -75,7 +98,7 @@ impl ForwardRenderer {
                 let buffer_infos = [vk::DescriptorBufferInfo {
                     buffer: uniform_buffers[index],
                     offset: 0,
-                    range: size_of::<UBO>() as vk::DeviceSize,
+                    range: size_of::<SceneData>() as vk::DeviceSize,
                 }];
                 let ubo_write = vk::WriteDescriptorSet::default()
                     .descriptor_type(vk::DescriptorType::UNIFORM_BUFFER)
@@ -92,6 +115,8 @@ impl ForwardRenderer {
 
             Self {
                 gpu: Rc::clone(gpu),
+                shading_cache: RefCell::new(HashMap::new()),
+                pipeline_cache: RefCell::new(HashMap::new()),
 
                 view: Mat4::identity(),
                 projection: Mat4::identity(),
@@ -99,6 +124,8 @@ impl ForwardRenderer {
                 descriptor_pool,
                 descriptor_set_layout,
                 descriptor_sets,
+
+                depth_reverse_z: false,
 
                 framebuffers,
                 render_pass,
@@ -116,18 +143,6 @@ impl ForwardRenderer {
         }
     }
 
-    pub fn update(&mut self) {
-        // let aspect = self.swapchain_properties.extent.width as f32
-        //     / self.swapchain_properties.extent.height as f32;
-        self.view = Mat4::look_at_rh(
-            Vec3::new(0.0, 10.0, 10.0),
-            Vec3::new(0.0, 0.0, 0.0),
-            Vec3::new(0.0, 1.0, 0.0),
-        );
-        // self.projection = Mat4::orthographic_rh(-2.0, 2.0, -2.0, 2.0, 0.01, 100.0);
-        self.projection = Mat4::perspective_reversed_z_infinite_rh(PI / 2.0, 1.0, 0.01);
-    }
-
     pub fn render(
         &self,
         command_buffer: vk::CommandBuffer,
@@ -135,6 +150,57 @@ impl ForwardRenderer {
         image_index: usize,
         frame_index: usize,
     ) {
+        unsafe {
+            let device = &self.gpu.device_context.device;
+            let scene_data = SceneData {
+                view: self.view,
+                projection: self.projection,
+                view_projection: self.projection * self.view,
+            };
+            let mut align = ash::util::Align::new(
+                self.uniform_buffer_memories_mapped[frame_index],
+                align_of::<SceneData>() as vk::DeviceSize,
+                size_of::<SceneData>() as vk::DeviceSize,
+            );
+            align.copy_from_slice(&[scene_data]);
+
+            objects.iter().for_each(|object| {
+                if let Err(msg) = self.preprocess_material(&object.material) {
+                    println!("preprocess_material failed, {}", msg);
+                    return;
+                }
+
+                let shading_cache = self.shading_cache.borrow();
+                let Some(shading) = shading_cache.get(&object.material.get_id()) else {
+                    return;
+                };
+
+                if let Some(tex) = object.material.tex {
+                    let image_infos = [vk::DescriptorImageInfo {
+                        image_view: tex.image_view,
+                        image_layout: vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
+                        sampler: tex.image_sampler,
+                    }];
+
+                    let texture_write = vk::WriteDescriptorSet::default()
+                        .descriptor_type(vk::DescriptorType::SAMPLED_IMAGE)
+                        .image_info(&image_infos)
+                        .dst_set(shading.descriptor_sets[frame_index])
+                        .dst_binding(0)
+                        .dst_array_element(0);
+
+                    let sampler_write = vk::WriteDescriptorSet::default()
+                        .descriptor_type(vk::DescriptorType::SAMPLER)
+                        .image_info(&image_infos)
+                        .dst_set(shading.descriptor_sets[frame_index])
+                        .dst_binding(1)
+                        .dst_array_element(0);
+
+                    device.update_descriptor_sets(&[texture_write, sampler_write], &[]);
+                }
+            });
+        }
+
         unsafe {
             let device = &self.gpu.device_context.device;
             device.cmd_set_viewport(
@@ -166,7 +232,7 @@ impl ForwardRenderer {
                 },
                 vk::ClearValue {
                     depth_stencil: vk::ClearDepthStencilValue {
-                        depth: 1.0,
+                        depth: if self.depth_reverse_z { 0.0 } else { 1.0 },
                         stencil: 0,
                     },
                 },
@@ -191,38 +257,53 @@ impl ForwardRenderer {
             );
 
             objects.iter().for_each(|obj| {
-                let ubo = UBO {
-                    model: obj.model,
-                    view: self.view,
-                    projection: self.projection,
+                let shading_cache = self.shading_cache.borrow();
+                let Some(shading) = shading_cache.get(&obj.material.get_id()) else {
+                    return;
                 };
-                let mut align = ash::util::Align::new(
-                    self.uniform_buffer_memories_mapped[frame_index],
-                    align_of::<UBO>() as vk::DeviceSize,
-                    size_of::<UBO>() as vk::DeviceSize,
+
+                let object_data = ObjectData { model: obj.model };
+                device.cmd_push_constants(
+                    command_buffer,
+                    shading.pipeline.pipeline_layout,
+                    vk::ShaderStageFlags::ALL_GRAPHICS,
+                    0,
+                    any_as_u8_slice(&object_data),
                 );
-                align.copy_from_slice(&[ubo]);
 
                 device.cmd_bind_descriptor_sets(
                     command_buffer,
                     vk::PipelineBindPoint::GRAPHICS,
-                    obj.shading.pipeline_layout,
+                    shading.pipeline.pipeline_layout,
                     0,
                     &[
                         self.descriptor_sets[frame_index],
-                        obj.shading.descriptor_sets[frame_index],
+                        shading.descriptor_sets[frame_index],
                     ],
                     &[],
                 );
 
-                obj.render(&self.gpu, command_buffer, frame_index);
+                device.cmd_bind_pipeline(
+                    command_buffer,
+                    vk::PipelineBindPoint::GRAPHICS,
+                    shading.pipeline.pipeline,
+                );
+                device.cmd_bind_vertex_buffers(command_buffer, 0, &[obj.geom.vertex_buffer], &[0]);
+                device.cmd_bind_index_buffer(
+                    command_buffer,
+                    obj.geom.index_buffer,
+                    0,
+                    vk::IndexType::UINT32,
+                );
+                // device.cmd_draw_indexed(command_buffer, self.geom.indices.len() as u32, 1, 0, 0, 0);
+                device.cmd_draw_indexed(command_buffer, obj.geom.indices_len as u32, 1, 0, 0, 0);
             });
 
             device.cmd_end_render_pass(command_buffer);
         }
     }
 
-    pub fn acquire_shading(&self, def: ShadingDef) -> Shading {
+    pub fn preprocess_material(&self, material: &Material) -> Result<(), &str> {
         // The Vulkan SDK includes libshaderc, which is a library to compile GLSL code to SPIR-V from within your program.
         // https://github.com/google/shaderc
         // little endian
@@ -233,31 +314,60 @@ impl ForwardRenderer {
 
         // let vert_shader_module = device.create_shader_module(&vert_shader_code);
         // let frag_shader_module = device.create_shader_module(&frag_shader_code);
-        let mut buffer = io::Cursor::new(&def.data);
-        let shader_code = ash::util::read_spv(&mut buffer).unwrap();
-        let shader_module = self.gpu.create_shader_module(&shader_code);
+        let def = ShadingDef::load("simple.spv");
+        if def.mode != ShadingMode::Unlit {
+            return Err("Unsupported ShadingMode");
+        }
 
-        let descriptor_set_layout = self.gpu.create_descriptor_set_layout(def.layouts.to_vec());
-        let (pipeline, pipeline_layout) =
-            self.create_pipeline(def, shader_module, descriptor_set_layout);
+        if let Some(_) = self.shading_cache.borrow_mut().get(&material.get_id()) {
+            return Ok(());
+        }
+
+        let mut pipeline_cache = self.pipeline_cache.borrow_mut();
+        let pipeline = if let Some(&pipeline) = pipeline_cache.get(&def.id) {
+            pipeline
+        } else {
+            let data = Shaders::get(def.path).unwrap().data;
+            let mut buffer = io::Cursor::new(&data);
+            let shader_code = ash::util::read_spv(&mut buffer).unwrap();
+            let shader_module = self.gpu.create_shader_module(&shader_code);
+
+            let descriptor_set_layout = self.gpu.create_descriptor_set_layout(&def.bindings);
+            let (pipeline, pipeline_layout) =
+                self.create_pipeline(&def, shader_module, descriptor_set_layout);
+
+            let pipeline = Pipeline {
+                def: def.id,
+                shader_module,
+                descriptor_set_layout,
+                pipeline_layout,
+                pipeline,
+            };
+            pipeline_cache.insert(def.id, pipeline);
+
+            pipeline
+        };
 
         let descriptor_sets = self.gpu.create_descriptor_sets(
             self.descriptor_pool,
-            &vec![descriptor_set_layout; Self::FRAMES_IN_FLIGHT as usize],
+            &vec![pipeline.descriptor_set_layout; Self::FRAMES_IN_FLIGHT as usize],
         );
-
-        Shading {
-            shader_module,
-            descriptor_set_layout,
+        let shading = Shading {
             pipeline,
-            pipeline_layout,
+            pipeline_dirty: false,
             descriptor_sets,
-        }
+        };
+
+        self.shading_cache
+            .borrow_mut()
+            .insert(material.get_id(), shading);
+
+        Ok(())
     }
 
     fn create_pipeline(
         &self,
-        def: ShadingDef,
+        def: &ShadingDef,
         shader_module: vk::ShaderModule,
         descriptor_set_layout: vk::DescriptorSetLayout,
     ) -> (vk::Pipeline, vk::PipelineLayout) {
@@ -344,7 +454,11 @@ impl ForwardRenderer {
             let depth_stencil = vk::PipelineDepthStencilStateCreateInfo::default()
                 .depth_write_enable(def.depth_write)
                 .depth_test_enable(def.depth_test)
-                .depth_compare_op(vk::CompareOp::LESS)
+                .depth_compare_op(if self.depth_reverse_z {
+                    vk::CompareOp::GREATER
+                } else {
+                    vk::CompareOp::LESS
+                })
                 .stencil_test_enable(false)
                 .front(vk::StencilOpState::default())
                 .back(vk::StencilOpState::default())
@@ -353,10 +467,14 @@ impl ForwardRenderer {
                 .min_depth_bounds(0.0)
                 .max_depth_bounds(1.0);
 
+            let push_constant_ranges = [vk::PushConstantRange::default()
+                .stage_flags(vk::ShaderStageFlags::ALL_GRAPHICS)
+                .offset(0)
+                .size(size_of::<ObjectData>() as u32)];
             let descriptor_set_layouts = vec![self.descriptor_set_layout, descriptor_set_layout];
-            let layout_create_info =
-                vk::PipelineLayoutCreateInfo::default().set_layouts(&descriptor_set_layouts);
-            // .push_constant_ranges()
+            let layout_create_info = vk::PipelineLayoutCreateInfo::default()
+                .set_layouts(&descriptor_set_layouts)
+                .push_constant_ranges(&push_constant_ranges);
 
             let pipeline_layout = self
                 .gpu
@@ -400,21 +518,20 @@ impl ForwardRenderer {
 
             pool_sizes.push(vk::DescriptorPoolSize {
                 ty: vk::DescriptorType::UNIFORM_BUFFER,
-                descriptor_count: ForwardRenderer::FRAMES_IN_FLIGHT,
+                descriptor_count: ForwardRenderer::FRAMES_IN_FLIGHT * 100,
             });
             pool_sizes.push(vk::DescriptorPoolSize {
                 ty: vk::DescriptorType::SAMPLED_IMAGE,
-                descriptor_count: ForwardRenderer::FRAMES_IN_FLIGHT,
+                descriptor_count: ForwardRenderer::FRAMES_IN_FLIGHT * 100,
             });
             pool_sizes.push(vk::DescriptorPoolSize {
                 ty: vk::DescriptorType::SAMPLER,
-                descriptor_count: ForwardRenderer::FRAMES_IN_FLIGHT,
+                descriptor_count: ForwardRenderer::FRAMES_IN_FLIGHT * 100,
             });
 
             let create_info = vk::DescriptorPoolCreateInfo::default()
-                // .flags(vk::DescriptorPoolCreateFlags::FREE_DESCRIPTOR_SET)
                 .pool_sizes(&pool_sizes)
-                .max_sets(ForwardRenderer::FRAMES_IN_FLIGHT * 2);
+                .max_sets(ForwardRenderer::FRAMES_IN_FLIGHT * (100 + 1));
 
             gpu.device_context
                 .device
@@ -426,7 +543,7 @@ impl ForwardRenderer {
     fn create_uniform_buffers(
         gpu: &GPU,
     ) -> (Vec<vk::Buffer>, Vec<vk::DeviceMemory>, Vec<*mut c_void>) {
-        let buffer_size = size_of::<UBO>() as vk::DeviceSize;
+        let buffer_size = size_of::<SceneData>() as vk::DeviceSize;
         let mut buffers = Vec::new();
         let mut memories = Vec::new();
         let mut memories_mapped = Vec::new();
@@ -626,15 +743,32 @@ impl Drop for ForwardRenderer {
         unsafe {
             let device = &self.gpu.device_context.device;
 
+            self.pipeline_cache
+                .get_mut()
+                .iter()
+                .for_each(|(_, pipeline)| {
+                    device.destroy_descriptor_set_layout(pipeline.descriptor_set_layout, None);
+                    device.destroy_shader_module(pipeline.shader_module, None);
+                    device.destroy_pipeline(pipeline.pipeline, None);
+                    device.destroy_pipeline_layout(pipeline.pipeline_layout, None);
+                });
+
+            self.shading_cache
+                .get_mut()
+                .iter()
+                .for_each(|(_, shading)| {
+                    let _ = device.free_descriptor_sets(
+                        self.descriptor_pool,
+                        shading.descriptor_sets.as_slice(),
+                    );
+                });
+
             self.uniform_buffers.iter().for_each(|buffer| {
                 device.destroy_buffer(*buffer, None);
             });
             self.uniform_buffer_memories.iter().for_each(|memory| {
                 device.free_memory(*memory, None);
             });
-            // device
-            //     .free_descriptor_sets(self.renderer.descriptor_pool, &self.descriptor_sets)
-            //     .unwrap();
 
             self.framebuffers
                 .iter()

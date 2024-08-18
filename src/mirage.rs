@@ -1,14 +1,17 @@
 use crate::gpu::*;
+use crate::math::{Euler, Mat4, Vec3};
 use crate::renderer::*;
 use ash::vk;
 use raw_window_handle;
 use std::cell::Cell;
+use std::f32::consts::PI;
 use std::rc::Rc;
+use std::time::Instant;
 use winit::window::Window;
 
 pub struct Mirage {
     gpu: Rc<GPU>,
-
+    // pub ui_state: egui_winit::State,
     command_pool: vk::CommandPool,
     command_buffers: Vec<vk::CommandBuffer>,
     image_available_semaphores: Vec<vk::Semaphore>,
@@ -16,6 +19,8 @@ pub struct Mirage {
     in_flight_fences: Vec<vk::Fence>,
     frame_index: Cell<usize>,
 
+    timer: Instant,
+    elapsed_time: f32,
     forward_renderer: ForwardRenderer,
     objects: Vec<Object>,
 }
@@ -23,10 +28,19 @@ pub struct Mirage {
 impl Mirage {
     pub fn initialize(window: &Rc<Window>) -> Self {
         let gpu = Rc::new(GPU::new(&window));
+        // let egui_context = egui::Context::default();
+        // let egui_state = egui_winit::State::new(
+        //     egui_context,
+        //     egui::ViewportId::ROOT,
+        //     &gpu.context.window,
+        //     Some(gpu.context.window.scale_factor() as f32),
+        //     None
+        // );
 
         let command_pool = Self::create_command_pools(&gpu);
 
-        let forward_renderer = ForwardRenderer::new(&gpu);
+        let mut forward_renderer = ForwardRenderer::new(&gpu);
+        forward_renderer.depth_reverse_z = true;
         let command_buffers =
             Self::create_command_buffers(&gpu, command_pool, ForwardRenderer::FRAMES_IN_FLIGHT);
         let (image_available_semaphores, render_finished_semaphores, in_flight_fences) =
@@ -34,12 +48,18 @@ impl Mirage {
 
         let (vertices, indices) = Geom::model();
         let geom = Geom::new(&gpu, vertices, indices);
-        let shading = forward_renderer.acquire_shading(ShadingDef::load("simple.spv"));
-        let objects = vec![Object::new(&gpu, geom, shading)];
+        let mut material = Material::new("Simple");
+        material.tex = Some(Texture::load(&gpu, "assets/texture.jpg"));
+        let mut objects = vec![Object::new(geom, material.clone())];
+
+        material.tex = Some(Texture::load(&gpu, "assets/viking_room.png"));
+        objects.push(Object::new(geom, material.clone()));
+
+        objects.push(Object::new(geom, material.clone()));
 
         Self {
             gpu,
-
+            // ui_state: egui_state,
             command_pool,
             command_buffers,
             image_available_semaphores,
@@ -47,6 +67,8 @@ impl Mirage {
             in_flight_fences,
             frame_index: Cell::new(0),
 
+            timer: Instant::now(),
+            elapsed_time: 0.0,
             forward_renderer,
             objects,
         }
@@ -54,18 +76,45 @@ impl Mirage {
 
     pub fn update_window(&self, window: &Rc<Window>) {}
 
+    pub fn update_system(&mut self) {
+        let elapsed_time = self.timer.elapsed().as_secs_f32();
+        let delta_time = elapsed_time - self.elapsed_time;
+        self.elapsed_time = elapsed_time;
+
+        // let aspect = self.swapchain_properties.extent.width as f32
+        //     / self.swapchain_properties.extent.height as f32;
+        self.forward_renderer.view = Mat4::look_at_rh(
+            Vec3::new(0.0, 10.0, 10.0),
+            Vec3::new(0.0, 0.0, 0.0),
+            Vec3::new(0.0, 1.0, 0.0),
+        );
+        // self.projection = Mat4::orthographic_rh(-2.0, 2.0, -2.0, 2.0, 0.01, 100.0);
+        self.forward_renderer.projection =
+            Mat4::perspective_reversed_z_infinite_rh(PI / 2.0, 1.0, 0.01);
+
+        self.objects
+            .iter_mut()
+            .enumerate()
+            .for_each(|(index, obj)| {
+                obj.model = Mat4::translate(Vec3::new(index as f32 * 3.0, 0.0, -0.9))
+                    * Mat4::from(Euler::new(0.0, self.elapsed_time, 0.0))
+                    * Mat4::scale(Vec3::new(2.0, 2.0, 2.0));
+            });
+    }
+
     pub fn render(&mut self) {
         unsafe {
             let frame_index = self.frame_index.get();
 
-            let device = &self.gpu.device_context.device;
             let fence = self.in_flight_fences[frame_index];
             let image_available_semaphore = self.image_available_semaphores[frame_index];
             let render_finished_semaphore = self.render_finished_semaphores[frame_index];
 
             // There happens to be two kinds of semaphores in Vulkan, binary and timeline. We use binary semaphores here.
             // A fence has a similar purpose, in that it is used to synchronize execution, but it is for ordering the execution on the CPU, otherwise known as the host.
-            device
+            self.gpu
+                .device_context
+                .device
                 .wait_for_fences(&[fence], true, u64::MAX)
                 .expect("failed to wait fence!");
 
@@ -74,12 +123,16 @@ impl Mirage {
                     .swap_chain
                     .acquire_image(u64::MAX, Some(image_available_semaphore), None);
 
-            device
+            self.gpu
+                .device_context
+                .device
                 .reset_fences(&[fence])
                 .expect("failed to reset fence!");
 
             let command_buffer = self.command_buffers[frame_index];
-            device
+            self.gpu
+                .device_context
+                .device
                 .reset_command_buffer(command_buffer, vk::CommandBufferResetFlags::empty())
                 .expect("failed to reset command buffer!");
 
@@ -91,14 +144,14 @@ impl Mirage {
             // Only relevant for secondary command buffers. It specifies which state to inherit from the calling primary command buffers.
             // .inheritance_info()
 
-            device
+            self.gpu
+                .device_context
+                .device
                 .begin_command_buffer(command_buffer, &begin_info)
                 .expect("failed to begin command buffer!");
 
             {
-                self.forward_renderer.update();
-                self.objects.iter_mut().for_each(|obj| obj.update());
-
+                self.update_system();
                 self.forward_renderer.render(
                     command_buffer,
                     &self.objects,
@@ -107,7 +160,9 @@ impl Mirage {
                 );
             }
 
-            device
+            self.gpu
+                .device_context
+                .device
                 .end_command_buffer(command_buffer)
                 .expect("failed to end command buffer!");
 
@@ -121,7 +176,9 @@ impl Mirage {
                 .wait_semaphores(&wait_semaphores)
                 .wait_dst_stage_mask(&stage_masks)
                 .signal_semaphores(&signal_semaphores);
-            device
+            self.gpu
+                .device_context
+                .device
                 .queue_submit(
                     self.gpu.device_context.graphic_queue.unwrap(),
                     &[submit_info],
@@ -259,15 +316,12 @@ impl Drop for Mirage {
             device.device_wait_idle().unwrap();
 
             self.objects.iter().for_each(|obj| {
-                device.destroy_descriptor_set_layout(obj.shading.descriptor_set_layout, None);
-                device.destroy_shader_module(obj.shading.shader_module, None);
-                device.destroy_pipeline(obj.shading.pipeline, None);
-                device.destroy_pipeline_layout(obj.shading.pipeline_layout, None);
-
-                device.destroy_image(obj.texture_image, None);
-                device.destroy_sampler(obj.texture_image_sampler, None);
-                device.destroy_image_view(obj.texture_image_view, None);
-                device.free_memory(obj.texture_image_memory, None);
+                if let Some(tex) = obj.material.tex {
+                    device.destroy_image(tex.image, None);
+                    device.destroy_sampler(tex.image_sampler, None);
+                    device.destroy_image_view(tex.image_view, None);
+                    device.free_memory(tex.image_memory, None);
+                }
 
                 device.destroy_buffer(obj.geom.vertex_buffer, None);
                 device.free_memory(obj.geom.vertex_buffer_memory, None);

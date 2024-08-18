@@ -1,13 +1,20 @@
-struct UniformBufferObject {
-    model: mat4x4<f32>,
+struct SceneUBO {
     view: mat4x4<f32>,
     projection: mat4x4<f32>,
+    view_projection: mat4x4<f32>,
 }
 
+struct ObjectPushConstants {
+    model: mat4x4<f32>
+}
+
+var<push_constant> object: ObjectPushConstants;
+
 @group(0) @binding(0)
-var<uniform> ubo: UniformBufferObject;
+var<uniform> scene: SceneUBO;
 //@group(0) @binding(1)
-//var object: Object;
+//var<uniform> scene: CameraData;
+
 @group(1) @binding(0)
 var colorTexture: texture_2d<f32>;
 @group(1) @binding(1)
@@ -30,7 +37,7 @@ struct VertexOutput {
 fn vs(in: VertexInput) -> VertexOutput {
     var output = VertexOutput();
 
-    output.position = ubo.projection * ubo.view * ubo.model * vec4<f32>(in.position, 1.0);
+    output.position = scene.view_projection * object.model * vec4<f32>(in.position, 1.0);
 
     output.fragColor = in.color;
     output.fragCoord = in.uv;
