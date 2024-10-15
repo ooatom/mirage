@@ -258,19 +258,27 @@ impl Mat4 {
     }
 
     #[inline]
-    pub fn compose(translation: Vec3, rotation: Euler, scale: Vec3) -> Self {
-        Self::translate(translation) * Self::rotate(rotation) * Self::scale(scale)
+    pub fn compose(location: Vec3, rotation: Euler, scale: Vec3) -> Self {
+        let mut mat = Self::rotate(rotation) * Self::scale(scale);
+        mat[3] = [location.x, location.y, location.z, 1.0];
+        mat
     }
 
     #[inline]
-    pub fn decompose(mat4: Self) -> (Vec3, Quat, Vec3) {
+    pub fn decompose(mat4: Self) -> (Vec3, Euler, Vec3) {
         (
             Vec3::new(1.0, 0.0, 1.0),
-            Quat {
+            // Quat {
+            //     x: 0.0,
+            //     y: 0.0,
+            //     z: 0.0,
+            //     s: 1.0,
+            // },
+            Euler {
                 x: 0.0,
                 y: 0.0,
                 z: 0.0,
-                s: 1.0,
+                order: EulerOrder::ZYX,
             },
             Vec3::new(1.0, 0.0, 1.0),
         )

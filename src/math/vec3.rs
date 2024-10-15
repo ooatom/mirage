@@ -1,6 +1,5 @@
 use crate::math::{Vec2, Vec4};
 use std::ops::{Add, Div, Mul, Neg, Sub};
-use std::usize::MAX;
 
 #[repr(C)]
 #[derive(Debug, Copy, Clone)]
@@ -14,6 +13,16 @@ impl Vec3 {
     #[inline]
     pub fn new(x: f32, y: f32, z: f32) -> Self {
         Self { x, y, z }
+    }
+
+    #[inline]
+    pub fn one() -> Self {
+        Self::new(1.0, 1.0, 1.0)
+    }
+
+    #[inline]
+    pub fn zero() -> Self {
+        Self::new(0.0, 0.0, 0.0)
     }
 
     #[inline]
@@ -54,11 +63,7 @@ impl Vec3 {
 impl Default for Vec3 {
     #[inline]
     fn default() -> Self {
-        Self {
-            x: 0.0,
-            y: 0.0,
-            z: 0.0,
-        }
+        Self::zero()
     }
 }
 

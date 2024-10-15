@@ -1,9 +1,11 @@
 use crate::math::{Mat4, Quat};
 
+#[derive(Debug, Copy, Clone)]
 pub enum EulerOrder {
-    ZYX,
+    ZYX = 0,
 }
 
+#[derive(Debug, Copy, Clone)]
 pub struct Euler {
     pub x: f32,
     pub y: f32,
