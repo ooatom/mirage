@@ -1,13 +1,35 @@
+use crate::mirage::Mirage;
 use std::rc::Rc;
 use winit::application::ApplicationHandler;
 use winit::event::WindowEvent;
 use winit::event_loop::ActiveEventLoop;
 use winit::window::{Window, WindowId};
-use crate::mirage::Mirage;
 
 pub struct Application {
     pub window: Option<Rc<Window>>,
     pub mirage: Option<Mirage>,
+}
+
+impl Application {
+    pub fn new() -> Self {
+        Self {
+            window: None,
+            mirage: None,
+        }
+    }
+
+    fn init(&mut self, window: Window) {
+        let rc_window = Rc::new(window);
+
+        if let Some(mirage) = &self.mirage {
+            mirage.update_window(Rc::clone(&rc_window));
+        } else {
+            let mut mirage = Mirage::new(Rc::clone(&rc_window));
+            self.mirage = Some(mirage);
+        }
+
+        self.window = Some(rc_window);
+    }
 }
 
 impl ApplicationHandler for Application {
@@ -16,12 +38,9 @@ impl ApplicationHandler for Application {
             .with_title("Mirage")
             .with_inner_size(winit::dpi::LogicalSize::new(800, 600));
 
-        self.window = Some(Rc::new(event_loop.create_window(attributes).unwrap()));
-        let window = self.window.as_ref().unwrap();
-        if self.mirage.is_none() {
-            self.mirage = Some(Mirage::initialize(window));
-        } else {
-            self.mirage.as_ref().unwrap().update_window(window);
+        match event_loop.create_window(attributes) {
+            Ok(window) => self.init(window),
+            Err(_) => {}
         }
     }
 

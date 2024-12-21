@@ -1,10 +1,10 @@
 use crate::gpu::*;
-use crate::math::{Euler, Mat4, Vec3};
+use crate::math::*;
 use crate::renderer::*;
+use crate::scene::comps::transform::Transform;
+use crate::scene::ecs::*;
 use ash::vk;
-use raw_window_handle;
 use std::cell::Cell;
-use std::f32::consts::PI;
 use std::rc::Rc;
 use std::time::Instant;
 use winit::window::Window;
@@ -20,14 +20,15 @@ pub struct Mirage {
     frame_index: Cell<usize>,
 
     timer: Instant,
-    elapsed_time: f32,
     forward_renderer: ForwardRenderer,
     objects: Vec<Object>,
+    scheduler: Scheduler,
+    world: World,
 }
 
 impl Mirage {
-    pub fn initialize(window: &Rc<Window>) -> Self {
-        let gpu = Rc::new(GPU::new(&window));
+    pub fn new(window: Rc<Window>) -> Self {
+        let gpu = Rc::new(GPU::new(window));
         // let egui_context = egui::Context::default();
         // let egui_state = egui_winit::State::new(
         //     egui_context,
@@ -46,16 +47,7 @@ impl Mirage {
         let (image_available_semaphores, render_finished_semaphores, in_flight_fences) =
             Self::create_sync_objects(&gpu, ForwardRenderer::FRAMES_IN_FLIGHT);
 
-        let (vertices, indices) = Geom::model();
-        let geom = Geom::new(&gpu, vertices, indices);
-        let mut material = Material::new("Simple");
-        material.tex = Some(Texture::load(&gpu, "assets/texture.jpg"));
-        let mut objects = vec![Object::new(geom, material.clone())];
-
-        material.tex = Some(Texture::load(&gpu, "assets/viking_room.png"));
-        objects.push(Object::new(geom, material.clone()));
-
-        objects.push(Object::new(geom, material.clone()));
+        let scheduler = Self::create_scheduler();
 
         Self {
             gpu,
@@ -68,41 +60,58 @@ impl Mirage {
             frame_index: Cell::new(0),
 
             timer: Instant::now(),
-            elapsed_time: 0.0,
             forward_renderer,
-            objects,
+            objects: vec![],
+            world: World::new(),
+            scheduler
         }
     }
 
-    pub fn update_window(&self, window: &Rc<Window>) {}
+    pub fn create_scheduler() -> Scheduler {
+        let mut scheduler = Scheduler::new();
+        scheduler.add_system(|world: &mut World, state: &SystemState| {
+            let query = Query::<(&mut Transform)>::new(world);
+            for transform in query {
+                transform.rotation = Euler::new(0.0, state.elapsed_time, 0.0);
+            };
+        });
 
-    pub fn update_system(&mut self) {
-        let elapsed_time = self.timer.elapsed().as_secs_f32();
-        let delta_time = elapsed_time - self.elapsed_time;
-        self.elapsed_time = elapsed_time;
+        scheduler
+    }
+
+    pub fn load_scene(&mut self, path: &str) {
+        let world = &mut self.world;
+
+        let entity = world.add_entity();
+        world.add_entity_comp(
+            entity,
+            Transform::new(Vec3::new(1.0,0.0,-0.8), Euler::default(), Vec3::new(2.0,2.0,2.0)),
+        );
+        let entity = world.add_entity();
+        world.add_entity_comp(
+            entity,
+            Transform::new(Vec3::new(3.0,0.0,1.2), Euler::default(), Vec3::new(2.0,2.0,2.0)),
+        );
 
         // let aspect = self.swapchain_properties.extent.width as f32
         //     / self.swapchain_properties.extent.height as f32;
-        self.forward_renderer.view = Mat4::look_at_rh(
-            Vec3::new(0.0, 10.0, 10.0),
-            Vec3::new(0.0, 0.0, 0.0),
-            Vec3::new(0.0, 1.0, 0.0),
-        );
-        // self.projection = Mat4::orthographic_rh(-2.0, 2.0, -2.0, 2.0, 0.01, 100.0);
-        self.forward_renderer.projection =
-            Mat4::perspective_reversed_z_infinite_rh(PI / 2.0, 1.0, 0.01);
+        // self.forward_renderer.view = Mat4::look_at_rh(
+        self.forward_renderer.clear_cache();
+    }
 
-        self.objects
-            .iter_mut()
-            .enumerate()
-            .for_each(|(index, obj)| {
-                obj.model = Mat4::translate(Vec3::new(index as f32 * 3.0, 0.0, -0.9))
-                    * Mat4::from(Euler::new(0.0, self.elapsed_time, 0.0))
-                    * Mat4::scale(Vec3::new(2.0, 2.0, 2.0));
-            });
+    pub fn update_window(&self, window: Rc<Window>) {}
+
+    pub fn update(&mut self) {
+        let current_time = Instant::now();
+        let delta_time = current_time.duration_since(self.timer).as_secs_f32();
+        self.timer = current_time;
+
+        self.scheduler.tick(&mut self.world, delta_time);
     }
 
     pub fn render(&mut self) {
+        self.update();
+
         unsafe {
             let frame_index = self.frame_index.get();
 
@@ -151,7 +160,6 @@ impl Mirage {
                 .expect("failed to begin command buffer!");
 
             {
-                self.update_system();
                 self.forward_renderer.render(
                     command_buffer,
                     &self.objects,
@@ -314,20 +322,6 @@ impl Drop for Mirage {
         unsafe {
             let device = &self.gpu.device_context.device;
             device.device_wait_idle().unwrap();
-
-            self.objects.iter().for_each(|obj| {
-                if let Some(tex) = obj.material.tex {
-                    device.destroy_image(tex.image, None);
-                    device.destroy_sampler(tex.image_sampler, None);
-                    device.destroy_image_view(tex.image_view, None);
-                    device.free_memory(tex.image_memory, None);
-                }
-
-                device.destroy_buffer(obj.geom.vertex_buffer, None);
-                device.free_memory(obj.geom.vertex_buffer_memory, None);
-                device.destroy_buffer(obj.geom.index_buffer, None);
-                device.free_memory(obj.geom.index_buffer_memory, None);
-            });
 
             self.image_available_semaphores
                 .iter()

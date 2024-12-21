@@ -2,8 +2,6 @@ use ash::vk;
 
 #[derive(Copy, Clone)]
 pub struct Pipeline {
-    pub def: u32,
-
     pub descriptor_set_layout: vk::DescriptorSetLayout,
 
     pub shader_module: vk::ShaderModule,

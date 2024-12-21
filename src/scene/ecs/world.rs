@@ -11,7 +11,6 @@ pub struct EntityIndex {
 pub struct World {
     entity_id_index_map: HashMap<u32, EntityIndex>,
     components_map: HashMap<TypeId, Vec<Option<Box<dyn Any + 'static>>>>,
-    systems: Vec<Box<dyn Fn(&mut World, &SystemState)>>,
 }
 
 impl World {
@@ -19,7 +18,6 @@ impl World {
         World {
             entity_id_index_map: HashMap::new(),
             components_map: HashMap::new(),
-            systems: vec![],
         }
     }
 
@@ -106,23 +104,6 @@ impl World {
             comps.unwrap().get(index.index).is_some()
         } else {
             false
-        }
-    }
-
-    pub fn add_system<F>(&mut self, system: F)
-    where
-        F: Fn(&mut World, &SystemState) + 'static,
-    {
-        self.systems.push(Box::new(system));
-    }
-
-    pub fn tick(&mut self, delta_time: f32) {
-        let state = SystemState { delta: delta_time };
-        let world = (&mut *self) as *mut World;
-        unsafe {
-            (*world).systems.iter().for_each(|system| {
-                system(self, &state);
-            });
         }
     }
 

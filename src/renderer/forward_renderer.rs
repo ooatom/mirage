@@ -337,7 +337,6 @@ impl ForwardRenderer {
                 self.create_pipeline(&def, shader_module, descriptor_set_layout);
 
             let pipeline = Pipeline {
-                def: def.id,
                 shader_module,
                 descriptor_set_layout,
                 pipeline_layout,
@@ -363,6 +362,22 @@ impl ForwardRenderer {
             .insert(material.get_id(), shading);
 
         Ok(())
+    }
+
+    pub fn clear_cache(&mut self) {
+        unsafe {
+            let device = &self.gpu.device_context.device;
+
+            self.pipeline_cache
+                .get_mut()
+                .iter()
+                .for_each(|(_, pipeline)| {
+                    device.destroy_descriptor_set_layout(pipeline.descriptor_set_layout, None);
+                    device.destroy_shader_module(pipeline.shader_module, None);
+                    device.destroy_pipeline(pipeline.pipeline, None);
+                    device.destroy_pipeline_layout(pipeline.pipeline_layout, None);
+                });
+        }
     }
 
     fn create_pipeline(
@@ -741,28 +756,9 @@ impl ForwardRenderer {
 impl Drop for ForwardRenderer {
     fn drop(&mut self) {
         unsafe {
+            self.clear_cache();
+
             let device = &self.gpu.device_context.device;
-
-            self.pipeline_cache
-                .get_mut()
-                .iter()
-                .for_each(|(_, pipeline)| {
-                    device.destroy_descriptor_set_layout(pipeline.descriptor_set_layout, None);
-                    device.destroy_shader_module(pipeline.shader_module, None);
-                    device.destroy_pipeline(pipeline.pipeline, None);
-                    device.destroy_pipeline_layout(pipeline.pipeline_layout, None);
-                });
-
-            self.shading_cache
-                .get_mut()
-                .iter()
-                .for_each(|(_, shading)| {
-                    let _ = device.free_descriptor_sets(
-                        self.descriptor_pool,
-                        shading.descriptor_sets.as_slice(),
-                    );
-                });
-
             self.uniform_buffers.iter().for_each(|buffer| {
                 device.destroy_buffer(*buffer, None);
             });

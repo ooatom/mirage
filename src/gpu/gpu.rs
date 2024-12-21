@@ -15,7 +15,7 @@ pub struct GPU {
 }
 
 impl GPU {
-    pub fn new(window: &Rc<Window>) -> Self {
+    pub fn new(window: Rc<Window>) -> Self {
         let context = VkContext::new(window);
         let device_context = VkDeviceContext::new(&context);
         let swap_chain = SwapChain::new(&context, &device_context);

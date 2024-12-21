@@ -1,9 +1,7 @@
 use ash::{vk, Entry};
 use raw_window_handle::{HasDisplayHandle, HasWindowHandle};
 use std::borrow::Cow;
-use std::cell::{Cell, RefCell};
 use std::ffi::CStr;
-use std::mem::ManuallyDrop;
 use std::os;
 use std::rc::Rc;
 use winit::window::Window;
@@ -28,14 +26,14 @@ pub struct VkContext {
 }
 
 impl VkContext {
-    pub fn new(window: &Rc<Window>) -> Self {
+    pub fn new(window: Rc<Window>) -> Self {
         let entry = Entry::linked();
-        let instance = Self::create_instance(&entry, window);
+        let instance = Self::create_instance(&entry, &window);
         let (debug_utils_fn, debug_utils_messenger) = Self::setup_debug_utils(&entry, &instance);
-        let (surface_fn, surface) = Self::create_surface(&entry, &instance, window);
+        let (surface_fn, surface) = Self::create_surface(&entry, &instance, &window);
 
         Self {
-            window: window.clone(),
+            window,
             entry,
             instance,
             debug_utils_fn,

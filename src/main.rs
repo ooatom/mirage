@@ -3,9 +3,10 @@ mod mirage;
 mod scene;
 mod app;
 mod renderer;
+mod gpu;
+mod loaders;
 
 use rust_embed::RustEmbed;
-use winit::application::ApplicationHandler;
 use winit::event_loop::{ControlFlow, EventLoop};
 use app::Application;
 
@@ -18,10 +19,7 @@ pub struct Assets;
 pub struct Shaders;
 
 fn main() {
-    let mut app = Application {
-        window: None,
-        mirage: None,
-    };
+    let mut app = Application::new();
 
     let event_loop = EventLoop::new().unwrap();
     event_loop.set_control_flow(ControlFlow::Poll);
