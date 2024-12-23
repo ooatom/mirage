@@ -146,7 +146,7 @@ impl ForwardRenderer {
     pub fn render(
         &self,
         command_buffer: vk::CommandBuffer,
-        objects: &Vec<Object>,
+        objects: &Vec<RenderObject>,
         image_index: usize,
         frame_index: usize,
     ) {

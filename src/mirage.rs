@@ -1,10 +1,11 @@
 use crate::gpu::*;
 use crate::math::*;
 use crate::renderer::*;
-use crate::scene::comps::transform::Transform;
+use crate::scene::comps::*;
 use crate::scene::ecs::*;
 use ash::vk;
 use std::cell::Cell;
+use std::f32::consts::PI;
 use std::rc::Rc;
 use std::time::Instant;
 use winit::window::Window;
@@ -21,7 +22,6 @@ pub struct Mirage {
 
     timer: Instant,
     forward_renderer: ForwardRenderer,
-    objects: Vec<Object>,
     scheduler: Scheduler,
     world: World,
 }
@@ -61,41 +61,82 @@ impl Mirage {
 
             timer: Instant::now(),
             forward_renderer,
-            objects: vec![],
             world: World::new(),
-            scheduler
+            scheduler,
         }
     }
 
     pub fn create_scheduler() -> Scheduler {
         let mut scheduler = Scheduler::new();
         scheduler.add_system(|world: &mut World, state: &SystemState| {
-            let query = Query::<(&mut Transform)>::new(world);
+            let query = Query::<&mut Transform>::new(world);
             for transform in query {
                 transform.rotation = Euler::new(0.0, state.elapsed_time, 0.0);
-            };
+            }
         });
 
         scheduler
+    }
+
+    pub fn collect_render_objects(&mut self) -> Vec<RenderObject> {
+        let mut objects = vec![];
+
+        let query = Query::<(&Transform, &StaticMesh)>::new(&mut self.world);
+        for (transform, static_mesh) in query {
+            let object = RenderObject::new(static_mesh.geom, static_mesh.material, transform.matrix());
+            objects.push(object);
+        }
+
+        objects
     }
 
     pub fn load_scene(&mut self, path: &str) {
         let world = &mut self.world;
 
         let entity = world.add_entity();
+        let (vertices, indices) = Geom::model();
+        let mut material = Material::new("Simple");
+        material.tex = Some(Texture::load(&self.gpu, "assets/texture.jpg"));
         world.add_entity_comp(
             entity,
-            Transform::new(Vec3::new(1.0,0.0,-0.8), Euler::default(), Vec3::new(2.0,2.0,2.0)),
+            Transform::new(
+                Vec3::new(1.0, 0.0, -0.8),
+                Euler::default(),
+                Vec3::new(2.0, 2.0, 2.0),
+            ),
         );
-        let entity = world.add_entity();
         world.add_entity_comp(
             entity,
-            Transform::new(Vec3::new(3.0,0.0,1.2), Euler::default(), Vec3::new(2.0,2.0,2.0)),
+            StaticMesh::new(Geom::new(&self.gpu, vertices, indices), material.clone()),
+        );
+
+        let entity = world.add_entity();
+        let (vertices, indices) = Geom::model();
+        material.tex = Some(Texture::load(&self.gpu, "assets/viking_room.png"));
+        world.add_entity_comp(
+            entity,
+            Transform::new(
+                Vec3::new(3.0, 0.0, 1.2),
+                Euler::default(),
+                Vec3::new(2.0, 2.0, 2.0),
+            ),
+        );
+        world.add_entity_comp(
+            entity,
+            StaticMesh::new(Geom::new(&self.gpu, vertices, indices), material),
         );
 
         // let aspect = self.swapchain_properties.extent.width as f32
         //     / self.swapchain_properties.extent.height as f32;
-        // self.forward_renderer.view = Mat4::look_at_rh(
+        self.forward_renderer.view = Mat4::look_at_rh(
+            Vec3::new(0.0, 10.0, 10.0),
+            Vec3::new(0.0, 0.0, 0.0),
+            Vec3::new(0.0, 1.0, 0.0),
+        );
+        // // self.forward_renderer.projection = Mat4::orthographic_rh(-2.0, 2.0, -2.0, 2.0, 0.01, 100.0);
+        self.forward_renderer.projection =
+            Mat4::perspective_reversed_z_infinite_rh(PI / 2.0, 1.0, 0.01);
+
         self.forward_renderer.clear_cache();
     }
 
@@ -160,9 +201,10 @@ impl Mirage {
                 .expect("failed to begin command buffer!");
 
             {
+                let objects = self.collect_render_objects();
                 self.forward_renderer.render(
                     command_buffer,
-                    &self.objects,
+                    &objects,
                     image_index as usize,
                     frame_index,
                 );

@@ -1,6 +1,7 @@
 use super::*;
 use std::sync::atomic::{AtomicU32, Ordering};
 
+#[derive(Debug, Copy)]
 pub struct Material {
     id: u32,
     pub def_name: &'static str,
@@ -33,7 +34,6 @@ impl Clone for Material {
 
 fn allocate_id() -> u32 {
     static COUNT: AtomicU32 = AtomicU32::new(1);
-
     // let mut rng = thread_rng();
     // let rnd: u64 = rng.gen_range(0..1 << 16);
     // let dur = SystemTime::now().duration_since(UNIX_EPOCH).unwrap();

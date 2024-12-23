@@ -9,7 +9,7 @@ pub struct Transform {
     pub rotation: Euler,
     pub scale: Vec3,
     matrix_key: RefCell<Option<[f32; 10]>>,
-    matrix_cache: Mat4,
+    matrix_cache: RefCell<Mat4>,
 }
 impl Comp for Transform {}
 
@@ -20,15 +20,15 @@ impl Transform {
             rotation,
             scale,
             matrix_key: RefCell::new(None),
-            matrix_cache: Mat4::default(),
+            matrix_cache: RefCell::new(Mat4::default()),
         }
     }
 
     pub fn matrix(&self) -> Mat4 {
         if self.update_matrix_key() {
-            Mat4::compose(self.location, self.rotation, self.scale);
+            *self.matrix_cache.borrow_mut() = Mat4::compose(self.location, self.rotation, self.scale);
         }
-        self.matrix_cache
+        self.matrix_cache.borrow().clone()
     }
 
     pub fn matrix_mut(&mut self, mat4: Mat4) {
@@ -36,7 +36,7 @@ impl Transform {
         self.location = location;
         self.rotation = rotation;
         self.scale = scale;
-        self.matrix_cache = mat4;
+        *self.matrix_cache.borrow_mut() = mat4;
 
         self.update_matrix_key();
     }

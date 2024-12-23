@@ -1,7 +1,7 @@
 use crate::gpu::GPU;
 use ash::vk;
 
-#[derive(Copy, Clone)]
+#[derive(Debug, Copy, Clone)]
 pub struct Texture {
     pub image: vk::Image,
     pub image_memory: vk::DeviceMemory,

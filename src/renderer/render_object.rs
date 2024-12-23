@@ -1,18 +1,18 @@
 use super::*;
 use crate::math::{Mat4};
 
-pub struct Object {
+pub struct RenderObject {
     pub geom: Geom,
     pub material: Material,
     pub model: Mat4,
 }
 
-impl Object {
-    pub fn new(geom: Geom, material: Material) -> Self {
+impl RenderObject {
+    pub fn new(geom: Geom, material: Material, model: Mat4) -> Self {
         Self {
             geom,
             material,
-            model: Mat4::identity(),
+            model,
         }
     }
 }

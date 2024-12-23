@@ -5,7 +5,7 @@ use ash::vk;
 use std::io::Cursor;
 use tobj::LoadError;
 
-#[derive(Copy, Clone)]
+#[derive(Debug, Copy, Clone)]
 pub struct Geom {
     // pub vertices: Vec<Vertex>,
     // pub indices: Vec<u32>,
