@@ -5,18 +5,10 @@ mod app;
 mod renderer;
 mod gpu;
 mod loaders;
+mod assets;
 
-use rust_embed::RustEmbed;
 use winit::event_loop::{ControlFlow, EventLoop};
 use app::Application;
-
-#[derive(RustEmbed)]
-#[folder = "assets"]
-pub struct Assets;
-
-#[derive(RustEmbed)]
-#[folder = "$OUT_DIR/shaders"]
-pub struct Shaders;
 
 fn main() {
     let mut app = Application::new();

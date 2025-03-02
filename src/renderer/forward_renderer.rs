@@ -1,9 +1,11 @@
 use super::*;
+use crate::assets::{AssetHandle, Assets, Material};
 use crate::gpu::GPU;
 use crate::math::Mat4;
-use crate::renderer::material::Material;
+use crate::renderer::gpu_geom::GPUGeom;
+use crate::renderer::gpu_texture::GPUTexture;
 use crate::renderer::shading::Shading;
-use crate::Shaders;
+use crate::scene::vertex::Vertex;
 use ash::vk;
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -43,6 +45,9 @@ pub struct ForwardRenderer {
     pub projection: Mat4,
     pub pipeline_cache: RefCell<HashMap<u32, Pipeline>>,
     pub shading_cache: RefCell<HashMap<u32, Shading>>,
+
+    pub geom_cache: RefCell<HashMap<u32, GPUGeom>>,
+    pub texture_cache: RefCell<HashMap<u32, GPUTexture>>,
 
     pub descriptor_pool: vk::DescriptorPool,
     pub render_pass: vk::RenderPass,
@@ -117,6 +122,8 @@ impl ForwardRenderer {
                 gpu: Rc::clone(gpu),
                 shading_cache: RefCell::new(HashMap::new()),
                 pipeline_cache: RefCell::new(HashMap::new()),
+                geom_cache: RefCell::new(HashMap::new()),
+                texture_cache: RefCell::new(HashMap::new()),
 
                 view: Mat4::identity(),
                 projection: Mat4::identity(),
@@ -146,7 +153,7 @@ impl ForwardRenderer {
     pub fn render(
         &self,
         command_buffer: vk::CommandBuffer,
-        objects: &Vec<RenderObject>,
+        context: RenderContext,
         image_index: usize,
         frame_index: usize,
     ) {
@@ -164,40 +171,55 @@ impl ForwardRenderer {
             );
             align.copy_from_slice(&[scene_data]);
 
-            objects.iter().for_each(|object| {
-                if let Err(msg) = self.preprocess_material(&object.material) {
+            let assets = context.assets.borrow();
+            context.objects.iter().for_each(|object| {
+                if let Err(msg) = self.preprocess_material(&context, &object.material) {
                     println!("preprocess_material failed, {}", msg);
                     return;
                 }
 
                 let shading_cache = self.shading_cache.borrow();
-                let Some(shading) = shading_cache.get(&object.material.get_id()) else {
+                let Some(shading) = shading_cache.get(&object.material.id) else {
                     return;
                 };
 
-                if let Some(tex) = object.material.tex {
-                    let image_infos = [vk::DescriptorImageInfo {
-                        image_view: tex.image_view,
-                        image_layout: vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
-                        sampler: tex.image_sampler,
-                    }];
+                let material = assets.load(&object.material);
+                let Some(texture) = &material.tex else {
+                    return;
+                };
 
-                    let texture_write = vk::WriteDescriptorSet::default()
-                        .descriptor_type(vk::DescriptorType::SAMPLED_IMAGE)
-                        .image_info(&image_infos)
-                        .dst_set(shading.descriptor_sets[frame_index])
-                        .dst_binding(0)
-                        .dst_array_element(0);
+                let mut texture_cache = self.texture_cache.borrow_mut();
+                let texture = match texture_cache.get(&texture.id) {
+                    None => {
+                        let tex_asset = assets.load(&texture);
+                        let tex_gpu = GPUTexture::new(&self.gpu, &tex_asset);
+                        texture_cache.insert(texture.id, tex_gpu);
+                        texture_cache.get(&texture.id).unwrap()
+                    }
+                    Some(geom) => geom,
+                };
 
-                    let sampler_write = vk::WriteDescriptorSet::default()
-                        .descriptor_type(vk::DescriptorType::SAMPLER)
-                        .image_info(&image_infos)
-                        .dst_set(shading.descriptor_sets[frame_index])
-                        .dst_binding(1)
-                        .dst_array_element(0);
+                let image_infos = [vk::DescriptorImageInfo {
+                    image_view: texture.image_view,
+                    image_layout: vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
+                    sampler: texture.image_sampler,
+                }];
 
-                    device.update_descriptor_sets(&[texture_write, sampler_write], &[]);
-                }
+                let texture_write = vk::WriteDescriptorSet::default()
+                    .descriptor_type(vk::DescriptorType::SAMPLED_IMAGE)
+                    .image_info(&image_infos)
+                    .dst_set(shading.descriptor_sets[frame_index])
+                    .dst_binding(0)
+                    .dst_array_element(0);
+
+                let sampler_write = vk::WriteDescriptorSet::default()
+                    .descriptor_type(vk::DescriptorType::SAMPLER)
+                    .image_info(&image_infos)
+                    .dst_set(shading.descriptor_sets[frame_index])
+                    .dst_binding(1)
+                    .dst_array_element(0);
+
+                device.update_descriptor_sets(&[texture_write, sampler_write], &[]);
             });
         }
 
@@ -256,13 +278,26 @@ impl ForwardRenderer {
                 vk::SubpassContents::INLINE,
             );
 
-            objects.iter().for_each(|obj| {
+            let assets = context.assets.borrow();
+            context.objects.iter().for_each(|object| {
                 let shading_cache = self.shading_cache.borrow();
-                let Some(shading) = shading_cache.get(&obj.material.get_id()) else {
+                let Some(shading) = shading_cache.get(&object.material.id) else {
                     return;
                 };
+                let mut geom_cache = self.geom_cache.borrow_mut();
+                let geom = match geom_cache.get(&object.geom.id) {
+                    None => {
+                        let geom_asset = assets.load(&object.geom);
+                        let geom_gpu = GPUGeom::new(&self.gpu, &geom_asset);
+                        geom_cache.insert(object.geom.id, geom_gpu);
+                        geom_cache.get(&object.geom.id).unwrap()
+                    }
+                    Some(geom) => geom,
+                };
 
-                let object_data = ObjectData { model: obj.model };
+                let object_data = ObjectData {
+                    model: object.model,
+                };
                 device.cmd_push_constants(
                     command_buffer,
                     shading.pipeline.pipeline_layout,
@@ -288,22 +323,28 @@ impl ForwardRenderer {
                     vk::PipelineBindPoint::GRAPHICS,
                     shading.pipeline.pipeline,
                 );
-                device.cmd_bind_vertex_buffers(command_buffer, 0, &[obj.geom.vertex_buffer], &[0]);
+
+                device.cmd_bind_vertex_buffers(command_buffer, 0, &[geom.vertex_buffer], &[0]);
                 device.cmd_bind_index_buffer(
                     command_buffer,
-                    obj.geom.index_buffer,
+                    geom.index_buffer,
                     0,
                     vk::IndexType::UINT32,
                 );
+                // device.cmd_draw(command_buffer, );
                 // device.cmd_draw_indexed(command_buffer, self.geom.indices.len() as u32, 1, 0, 0, 0);
-                device.cmd_draw_indexed(command_buffer, obj.geom.indices_len as u32, 1, 0, 0, 0);
+                device.cmd_draw_indexed(command_buffer, geom.indices_length as u32, 1, 0, 0, 0);
             });
 
             device.cmd_end_render_pass(command_buffer);
         }
     }
 
-    pub fn preprocess_material(&self, material: &Material) -> Result<(), &str> {
+    pub fn preprocess_material(
+        &self,
+        context: &RenderContext,
+        material: &AssetHandle<Material>,
+    ) -> Result<(), &str> {
         // The Vulkan SDK includes libshaderc, which is a library to compile GLSL code to SPIR-V from within your program.
         // https://github.com/google/shaderc
         // little endian
@@ -319,7 +360,7 @@ impl ForwardRenderer {
             return Err("Unsupported ShadingMode");
         }
 
-        if let Some(_) = self.shading_cache.borrow_mut().get(&material.get_id()) {
+        if let Some(_) = self.shading_cache.borrow_mut().get(&material.id) {
             return Ok(());
         }
 
@@ -327,7 +368,7 @@ impl ForwardRenderer {
         let pipeline = if let Some(&pipeline) = pipeline_cache.get(&def.id) {
             pipeline
         } else {
-            let data = Shaders::get(def.path).unwrap().data;
+            let data = Assets::load_raw(def.path).unwrap();
             let mut buffer = io::Cursor::new(&data);
             let shader_code = ash::util::read_spv(&mut buffer).unwrap();
             let shader_module = self.gpu.create_shader_module(&shader_code);
@@ -357,9 +398,7 @@ impl ForwardRenderer {
             descriptor_sets,
         };
 
-        self.shading_cache
-            .borrow_mut()
-            .insert(material.get_id(), shading);
+        self.shading_cache.borrow_mut().insert(material.id, shading);
 
         Ok(())
     }

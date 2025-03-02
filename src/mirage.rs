@@ -1,10 +1,10 @@
+use crate::assets::*;
 use crate::gpu::*;
 use crate::math::*;
 use crate::renderer::*;
-use crate::scene::comps::*;
-use crate::scene::ecs::*;
+use crate::scene::*;
 use ash::vk;
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
 use std::f32::consts::PI;
 use std::rc::Rc;
 use std::time::Instant;
@@ -12,6 +12,7 @@ use winit::window::Window;
 
 pub struct Mirage {
     gpu: Rc<GPU>,
+    assets: Rc<RefCell<Assets>>,
     // pub ui_state: egui_winit::State,
     command_pool: vk::CommandPool,
     command_buffers: Vec<vk::CommandBuffer>,
@@ -29,6 +30,7 @@ pub struct Mirage {
 impl Mirage {
     pub fn new(window: Rc<Window>) -> Self {
         let gpu = Rc::new(GPU::new(window));
+        let assets = Rc::new(RefCell::new(Assets::new()));
         // let egui_context = egui::Context::default();
         // let egui_state = egui_winit::State::new(
         //     egui_context,
@@ -51,6 +53,7 @@ impl Mirage {
 
         Self {
             gpu,
+            assets,
             // ui_state: egui_state,
             command_pool,
             command_buffers,
@@ -78,25 +81,38 @@ impl Mirage {
         scheduler
     }
 
-    pub fn collect_render_objects(&mut self) -> Vec<RenderObject> {
+    pub fn generate_render_context(&mut self) -> RenderContext {
         let mut objects = vec![];
 
         let query = Query::<(&Transform, &StaticMesh)>::new(&mut self.world);
         for (transform, static_mesh) in query {
-            let object = RenderObject::new(static_mesh.geom, static_mesh.material, transform.matrix());
-            objects.push(object);
+            match (&static_mesh.geom, &static_mesh.material) {
+                (Some(geom), Some(material)) => {
+                    let object = RenderObject::new(geom.clone(), material.clone(), transform.matrix());
+                    objects.push(object);
+                }
+                _ => {}
+            }
         }
 
-        objects
+        RenderContext {
+            assets: self.assets.clone(),
+            objects,
+        }
     }
 
     pub fn load_scene(&mut self, path: &str) {
         let world = &mut self.world;
 
         let entity = world.add_entity();
-        let (vertices, indices) = Geom::model();
-        let mut material = Material::new("Simple");
-        material.tex = Some(Texture::load(&self.gpu, "assets/texture.jpg"));
+        let mut assets = self.assets.borrow_mut();
+        let geom_handle = assets.handle_path::<Geom>("viking_room.obj");
+        let material_handle = assets.handle(Material::new("Simple"));
+        let texture_handle = assets.handle_path::<Texture>("texture.jpg");
+
+        let material = assets.load_mut(&material_handle);
+        material.tex = texture_handle;
+
         world.add_entity_comp(
             entity,
             Transform::new(
@@ -107,12 +123,16 @@ impl Mirage {
         );
         world.add_entity_comp(
             entity,
-            StaticMesh::new(Geom::new(&self.gpu, vertices, indices), material.clone()),
+            StaticMesh::new(geom_handle.clone(), Some(material_handle)),
         );
 
         let entity = world.add_entity();
-        let (vertices, indices) = Geom::model();
-        material.tex = Some(Texture::load(&self.gpu, "assets/viking_room.png"));
+        let material_handle = assets.handle(Material::new("Simple"));
+        let texture_handle = assets.handle_path::<Texture>("viking_room.png");
+        let material = assets.load_mut(&material_handle);
+
+        material.tex = texture_handle;
+
         world.add_entity_comp(
             entity,
             Transform::new(
@@ -121,10 +141,8 @@ impl Mirage {
                 Vec3::new(2.0, 2.0, 2.0),
             ),
         );
-        world.add_entity_comp(
-            entity,
-            StaticMesh::new(Geom::new(&self.gpu, vertices, indices), material),
-        );
+
+        world.add_entity_comp(entity, StaticMesh::new(geom_handle, Some(material_handle)));
 
         // let aspect = self.swapchain_properties.extent.width as f32
         //     / self.swapchain_properties.extent.height as f32;
@@ -201,10 +219,10 @@ impl Mirage {
                 .expect("failed to begin command buffer!");
 
             {
-                let objects = self.collect_render_objects();
+                let context = self.generate_render_context();
                 self.forward_renderer.render(
                     command_buffer,
-                    &objects,
+                    context,
                     image_index as usize,
                     frame_index,
                 );

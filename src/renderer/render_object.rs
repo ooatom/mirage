@@ -1,18 +1,25 @@
-use super::*;
-use crate::math::{Mat4};
+use crate::assets::*;
+use crate::math::Mat4;
+use std::cell::RefCell;
+use std::rc::Rc;
 
 pub struct RenderObject {
-    pub geom: Geom,
-    pub material: Material,
+    pub geom: AssetHandle<Geom>,
+    pub material: AssetHandle<Material>,
     pub model: Mat4,
 }
 
 impl RenderObject {
-    pub fn new(geom: Geom, material: Material, model: Mat4) -> Self {
+    pub fn new(geom: AssetHandle<Geom>, material: AssetHandle<Material>, model: Mat4) -> Self {
         Self {
             geom,
             material,
             model,
         }
     }
+}
+
+pub struct RenderContext {
+    pub assets: Rc<RefCell<Assets>>,
+    pub objects: Vec<RenderObject>,
 }

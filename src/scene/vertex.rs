@@ -3,7 +3,7 @@ use std::mem::size_of;
 
 // Default repr Rust might rearrange the order of fields
 #[repr(C)]
-#[derive(Copy, Clone, PartialEq)]
+#[derive(Debug, Copy, Clone, PartialEq)]
 pub struct Vertex {
     pub position: [f32; 3],
     pub color: [f32; 3],
