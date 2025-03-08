@@ -1,6 +1,6 @@
 use crate::assets::asset_impl::AssetImpl;
 use crate::assets::Assets;
-use crate::scene::vertex::Vertex;
+use crate::renderer::vertex::Vertex;
 use std::io::Cursor;
 use tobj::LoadError;
 

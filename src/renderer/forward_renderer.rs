@@ -1,16 +1,8 @@
 use super::*;
-use crate::assets::{AssetHandle, Assets, Material};
 use crate::gpu::GPU;
 use crate::math::Mat4;
-use crate::renderer::gpu_geom::GPUGeom;
-use crate::renderer::gpu_texture::GPUTexture;
-use crate::renderer::shading::Shading;
-use crate::scene::vertex::Vertex;
 use ash::vk;
-use std::cell::RefCell;
-use std::collections::HashMap;
-use std::ffi::{c_void, CStr};
-use std::io;
+use std::ffi::c_void;
 use std::mem::{align_of, size_of};
 use std::rc::Rc;
 
@@ -38,18 +30,14 @@ unsafe fn u8_slice_as_any<T>(p: &[u8]) -> &T {
     &*(p.as_ptr() as *const T)
 }
 
+// struct FrameData {}
+
 pub struct ForwardRenderer {
     gpu: Rc<GPU>,
 
     pub view: Mat4,
     pub projection: Mat4,
-    pub pipeline_cache: RefCell<HashMap<u32, Pipeline>>,
-    pub shading_cache: RefCell<HashMap<u32, Shading>>,
 
-    pub geom_cache: RefCell<HashMap<u32, GPUGeom>>,
-    pub texture_cache: RefCell<HashMap<u32, GPUTexture>>,
-
-    pub descriptor_pool: vk::DescriptorPool,
     pub render_pass: vk::RenderPass,
     pub descriptor_set_layout: vk::DescriptorSetLayout,
     pub descriptor_sets: Vec<vk::DescriptorSet>,
@@ -74,7 +62,6 @@ impl ForwardRenderer {
 
     pub fn new(gpu: &Rc<GPU>) -> Self {
         unsafe {
-            let descriptor_pool = Self::create_descriptor_pool(&gpu);
             let render_pass = Self::create_render_pass(gpu);
             let (color_image, color_image_memory, color_image_view) =
                 Self::create_color_resources(gpu);
@@ -92,10 +79,10 @@ impl ForwardRenderer {
                     ..Default::default()
                 }]);
 
-            let descriptor_sets = gpu.create_descriptor_sets(
-                descriptor_pool,
-                &vec![descriptor_set_layout; Self::FRAMES_IN_FLIGHT as usize],
-            );
+            let descriptor_sets = gpu.create_descriptor_sets(&vec![
+                descriptor_set_layout;
+                Self::FRAMES_IN_FLIGHT as usize
+            ]);
             let (uniform_buffers, uniform_buffer_memories, uniform_buffer_memories_mapped) =
                 Self::create_uniform_buffers(gpu);
 
@@ -120,15 +107,10 @@ impl ForwardRenderer {
 
             Self {
                 gpu: Rc::clone(gpu),
-                shading_cache: RefCell::new(HashMap::new()),
-                pipeline_cache: RefCell::new(HashMap::new()),
-                geom_cache: RefCell::new(HashMap::new()),
-                texture_cache: RefCell::new(HashMap::new()),
 
                 view: Mat4::identity(),
                 projection: Mat4::identity(),
 
-                descriptor_pool,
                 descriptor_set_layout,
                 descriptor_sets,
 
@@ -171,32 +153,14 @@ impl ForwardRenderer {
             );
             align.copy_from_slice(&[scene_data]);
 
-            let assets = context.assets.borrow();
+            let mut gpu_assets = context.gpu_assets.borrow_mut();
             context.objects.iter().for_each(|object| {
-                if let Err(msg) = self.preprocess_material(&context, &object.material) {
-                    println!("preprocess_material failed, {}", msg);
-                    return;
-                }
-
-                let shading_cache = self.shading_cache.borrow();
-                let Some(shading) = shading_cache.get(&object.material.id) else {
+                let Some((pipeline, properties)) = gpu_assets.get_material(&object.material, self)
+                else {
                     return;
                 };
-
-                let material = assets.load(&object.material);
-                let Some(texture) = &material.tex else {
+                let Some(Some(texture)) = properties.get("texture") else {
                     return;
-                };
-
-                let mut texture_cache = self.texture_cache.borrow_mut();
-                let texture = match texture_cache.get(&texture.id) {
-                    None => {
-                        let tex_asset = assets.load(&texture);
-                        let tex_gpu = GPUTexture::new(&self.gpu, &tex_asset);
-                        texture_cache.insert(texture.id, tex_gpu);
-                        texture_cache.get(&texture.id).unwrap()
-                    }
-                    Some(geom) => geom,
                 };
 
                 let image_infos = [vk::DescriptorImageInfo {
@@ -208,14 +172,14 @@ impl ForwardRenderer {
                 let texture_write = vk::WriteDescriptorSet::default()
                     .descriptor_type(vk::DescriptorType::SAMPLED_IMAGE)
                     .image_info(&image_infos)
-                    .dst_set(shading.descriptor_sets[frame_index])
+                    .dst_set(pipeline.get_descriptor_set(frame_index))
                     .dst_binding(0)
                     .dst_array_element(0);
 
                 let sampler_write = vk::WriteDescriptorSet::default()
                     .descriptor_type(vk::DescriptorType::SAMPLER)
                     .image_info(&image_infos)
-                    .dst_set(shading.descriptor_sets[frame_index])
+                    .dst_set(pipeline.get_descriptor_set(frame_index))
                     .dst_binding(1)
                     .dst_array_element(0);
 
@@ -278,21 +242,13 @@ impl ForwardRenderer {
                 vk::SubpassContents::INLINE,
             );
 
-            let assets = context.assets.borrow();
+            let mut gpu_assets = context.gpu_assets.borrow_mut();
             context.objects.iter().for_each(|object| {
-                let shading_cache = self.shading_cache.borrow();
-                let Some(shading) = shading_cache.get(&object.material.id) else {
+                let Some(pipeline) = gpu_assets.get_pipeline(&object.material, self) else {
                     return;
                 };
-                let mut geom_cache = self.geom_cache.borrow_mut();
-                let geom = match geom_cache.get(&object.geom.id) {
-                    None => {
-                        let geom_asset = assets.load(&object.geom);
-                        let geom_gpu = GPUGeom::new(&self.gpu, &geom_asset);
-                        geom_cache.insert(object.geom.id, geom_gpu);
-                        geom_cache.get(&object.geom.id).unwrap()
-                    }
-                    Some(geom) => geom,
+                let Some(geom) = gpu_assets.get_geom(&object.geom) else {
+                    return;
                 };
 
                 let object_data = ObjectData {
@@ -300,7 +256,7 @@ impl ForwardRenderer {
                 };
                 device.cmd_push_constants(
                     command_buffer,
-                    shading.pipeline.pipeline_layout,
+                    pipeline.pipeline_layout,
                     vk::ShaderStageFlags::ALL_GRAPHICS,
                     0,
                     any_as_u8_slice(&object_data),
@@ -309,11 +265,11 @@ impl ForwardRenderer {
                 device.cmd_bind_descriptor_sets(
                     command_buffer,
                     vk::PipelineBindPoint::GRAPHICS,
-                    shading.pipeline.pipeline_layout,
+                    pipeline.pipeline_layout,
                     0,
                     &[
                         self.descriptor_sets[frame_index],
-                        shading.descriptor_sets[frame_index],
+                        pipeline.get_descriptor_set(frame_index),
                     ],
                     &[],
                 );
@@ -321,7 +277,7 @@ impl ForwardRenderer {
                 device.cmd_bind_pipeline(
                     command_buffer,
                     vk::PipelineBindPoint::GRAPHICS,
-                    shading.pipeline.pipeline,
+                    pipeline.pipeline,
                 );
 
                 device.cmd_bind_vertex_buffers(command_buffer, 0, &[geom.vertex_buffer], &[0]);
@@ -337,260 +293,6 @@ impl ForwardRenderer {
             });
 
             device.cmd_end_render_pass(command_buffer);
-        }
-    }
-
-    pub fn preprocess_material(
-        &self,
-        context: &RenderContext,
-        material: &AssetHandle<Material>,
-    ) -> Result<(), &str> {
-        // The Vulkan SDK includes libshaderc, which is a library to compile GLSL code to SPIR-V from within your program.
-        // https://github.com/google/shaderc
-        // little endian
-        // let mut buffer = Cursor::new(Shaders::get("simple.vert.spv").unwrap().data);
-        // let vert_shader_code = ash::util::read_spv(&mut buffer).unwrap();
-        // let mut buffer = Cursor::new(Shaders::get("simple.frag.spv").unwrap().data);
-        // let frag_shader_code = ash::util::read_spv(&mut buffer).unwrap();
-
-        // let vert_shader_module = device.create_shader_module(&vert_shader_code);
-        // let frag_shader_module = device.create_shader_module(&frag_shader_code);
-        let def = ShadingDef::load("simple.spv");
-        if def.mode != ShadingMode::Unlit {
-            return Err("Unsupported ShadingMode");
-        }
-
-        if let Some(_) = self.shading_cache.borrow_mut().get(&material.id) {
-            return Ok(());
-        }
-
-        let mut pipeline_cache = self.pipeline_cache.borrow_mut();
-        let pipeline = if let Some(&pipeline) = pipeline_cache.get(&def.id) {
-            pipeline
-        } else {
-            let data = Assets::load_raw(def.path).unwrap();
-            let mut buffer = io::Cursor::new(&data);
-            let shader_code = ash::util::read_spv(&mut buffer).unwrap();
-            let shader_module = self.gpu.create_shader_module(&shader_code);
-
-            let descriptor_set_layout = self.gpu.create_descriptor_set_layout(&def.bindings);
-            let (pipeline, pipeline_layout) =
-                self.create_pipeline(&def, shader_module, descriptor_set_layout);
-
-            let pipeline = Pipeline {
-                shader_module,
-                descriptor_set_layout,
-                pipeline_layout,
-                pipeline,
-            };
-            pipeline_cache.insert(def.id, pipeline);
-
-            pipeline
-        };
-
-        let descriptor_sets = self.gpu.create_descriptor_sets(
-            self.descriptor_pool,
-            &vec![pipeline.descriptor_set_layout; Self::FRAMES_IN_FLIGHT as usize],
-        );
-        let shading = Shading {
-            pipeline,
-            pipeline_dirty: false,
-            descriptor_sets,
-        };
-
-        self.shading_cache.borrow_mut().insert(material.id, shading);
-
-        Ok(())
-    }
-
-    pub fn clear_cache(&mut self) {
-        unsafe {
-            let device = &self.gpu.device_context.device;
-
-            self.pipeline_cache
-                .get_mut()
-                .iter()
-                .for_each(|(_, pipeline)| {
-                    device.destroy_descriptor_set_layout(pipeline.descriptor_set_layout, None);
-                    device.destroy_shader_module(pipeline.shader_module, None);
-                    device.destroy_pipeline(pipeline.pipeline, None);
-                    device.destroy_pipeline_layout(pipeline.pipeline_layout, None);
-                });
-        }
-    }
-
-    fn create_pipeline(
-        &self,
-        def: &ShadingDef,
-        shader_module: vk::ShaderModule,
-        descriptor_set_layout: vk::DescriptorSetLayout,
-    ) -> (vk::Pipeline, vk::PipelineLayout) {
-        unsafe {
-            let vert_shader_stage = vk::PipelineShaderStageCreateInfo::default()
-                .module(shader_module)
-                .stage(vk::ShaderStageFlags::VERTEX)
-                .name(CStr::from_bytes_with_nul_unchecked(b"vs\0"));
-            // It allows you to specify values for shader constants. You can use a single shader module where its behavior can be configured
-            // at pipeline creation by specifying different values for the constants used in it. This is more efficient than configuring
-            // the shader using variables at render time, because the compiler can do optimizations like eliminating if statements that
-            // depend on these values. If you don't have any constants like that, then you can set the member to nullptr,
-            // which our struct initialization does automatically.
-            // .specialization_info()
-
-            let frag_shader_stage = vk::PipelineShaderStageCreateInfo::default()
-                .module(shader_module)
-                .stage(vk::ShaderStageFlags::FRAGMENT)
-                .name(CStr::from_bytes_with_nul_unchecked(b"fs\0"));
-
-            let shader_stages = [vert_shader_stage, frag_shader_stage];
-
-            let input_bindings = [Vertex::get_binding_description()];
-            let input_attributes = Vertex::get_attribute_descriptions();
-
-            let vertex_input_state = vk::PipelineVertexInputStateCreateInfo::default()
-                .vertex_binding_descriptions(&input_bindings)
-                .vertex_attribute_descriptions(&input_attributes);
-
-            let input_assembly_stage = vk::PipelineInputAssemblyStateCreateInfo::default()
-                .topology(vk::PrimitiveTopology::TRIANGLE_LIST)
-                // used with Indexed drawing + Triangle Fan/Strip topologies. This is more efficient than explicitly
-                // ending the current primitive and explicitly starting a new primitive of the same type.
-                // A special “index” indicates that the primitive should start over.
-                //   If VkIndexType is VK_INDEX_TYPE_UINT16, special index is 0xFFFF
-                //   If VkIndexType is VK_INDEX_TYPE_UINT32, special index is 0xFFFFFFFF
-                // One Really Good use of Restart Enable is in Drawing Terrain Surfaces with Triangle Strips.
-                .primitive_restart_enable(false);
-
-            let dynamic_state = vk::PipelineDynamicStateCreateInfo::default()
-                .dynamic_states(&[vk::DynamicState::VIEWPORT, vk::DynamicState::SCISSOR]);
-
-            let viewport_state = vk::PipelineViewportStateCreateInfo::default()
-                .viewport_count(1)
-                .scissor_count(1);
-
-            let rasterization_state = vk::PipelineRasterizationStateCreateInfo::default()
-                .cull_mode(vk::CullModeFlags::BACK)
-                .front_face(vk::FrontFace::COUNTER_CLOCKWISE)
-                .polygon_mode(vk::PolygonMode::FILL)
-                .line_width(1.0)
-                .rasterizer_discard_enable(false)
-                .depth_clamp_enable(false)
-                .depth_bias_enable(false)
-                .depth_bias_clamp(0.0)
-                .depth_bias_slope_factor(0.0)
-                .depth_bias_constant_factor(0.0);
-
-            let multisample = vk::PipelineMultisampleStateCreateInfo::default()
-                .sample_shading_enable(true)
-                .min_sample_shading(0.2)
-                .rasterization_samples(self.gpu.device_context.msaa_samples)
-                .sample_mask(&[])
-                .alpha_to_coverage_enable(false)
-                .alpha_to_one_enable(false);
-
-            let color_attachments = [vk::PipelineColorBlendAttachmentState {
-                blend_enable: false.into(),
-                src_color_blend_factor: vk::BlendFactor::SRC_ALPHA,
-                dst_color_blend_factor: vk::BlendFactor::ONE_MINUS_SRC_ALPHA,
-                color_blend_op: vk::BlendOp::ADD,
-                src_alpha_blend_factor: vk::BlendFactor::SRC_ALPHA,
-                dst_alpha_blend_factor: vk::BlendFactor::ONE_MINUS_SRC_ALPHA,
-                alpha_blend_op: vk::BlendOp::ADD,
-                color_write_mask: vk::ColorComponentFlags::RGBA,
-            }];
-            let color_blend = vk::PipelineColorBlendStateCreateInfo::default()
-                // corresponding to renderPass subPass pColorAttachments
-                .attachments(&color_attachments)
-                .blend_constants([0.0, 0.0, 0.0, 0.0])
-                .logic_op_enable(false)
-                .logic_op(vk::LogicOp::COPY);
-
-            let depth_stencil = vk::PipelineDepthStencilStateCreateInfo::default()
-                .depth_write_enable(def.depth_write)
-                .depth_test_enable(def.depth_test)
-                .depth_compare_op(if self.depth_reverse_z {
-                    vk::CompareOp::GREATER
-                } else {
-                    vk::CompareOp::LESS
-                })
-                .stencil_test_enable(false)
-                .front(vk::StencilOpState::default())
-                .back(vk::StencilOpState::default())
-                // only keep fragments that fall within the specified depth range
-                .depth_bounds_test_enable(false)
-                .min_depth_bounds(0.0)
-                .max_depth_bounds(1.0);
-
-            let push_constant_ranges = [vk::PushConstantRange::default()
-                .stage_flags(vk::ShaderStageFlags::ALL_GRAPHICS)
-                .offset(0)
-                .size(size_of::<ObjectData>() as u32)];
-            let descriptor_set_layouts = vec![self.descriptor_set_layout, descriptor_set_layout];
-            let layout_create_info = vk::PipelineLayoutCreateInfo::default()
-                .set_layouts(&descriptor_set_layouts)
-                .push_constant_ranges(&push_constant_ranges);
-
-            let pipeline_layout = self
-                .gpu
-                .device_context
-                .device
-                .create_pipeline_layout(&layout_create_info, None)
-                .expect("failed to create pipeline layout!");
-
-            let create_info = vk::GraphicsPipelineCreateInfo::default()
-                .stages(&shader_stages)
-                .vertex_input_state(&vertex_input_state)
-                .input_assembly_state(&input_assembly_stage)
-                .dynamic_state(&dynamic_state)
-                .viewport_state(&viewport_state)
-                .rasterization_state(&rasterization_state)
-                .multisample_state(&multisample)
-                .color_blend_state(&color_blend)
-                .depth_stencil_state(&depth_stencil)
-                .layout(pipeline_layout)
-                .render_pass(self.render_pass)
-                .subpass(0)
-                .base_pipeline_handle(vk::Pipeline::null())
-                .base_pipeline_index(0);
-
-            let pipeline = self
-                .gpu
-                .device_context
-                .device
-                .create_graphics_pipelines(vk::PipelineCache::null(), &[create_info], None)
-                .expect("failed to create graphics pipeline!")[0];
-
-            (pipeline, pipeline_layout)
-        }
-    }
-
-    fn create_descriptor_pool(gpu: &GPU) -> vk::DescriptorPool {
-        unsafe {
-            // todo: VK_KHR_push_descriptor
-
-            let mut pool_sizes: Vec<vk::DescriptorPoolSize> = vec![];
-
-            pool_sizes.push(vk::DescriptorPoolSize {
-                ty: vk::DescriptorType::UNIFORM_BUFFER,
-                descriptor_count: ForwardRenderer::FRAMES_IN_FLIGHT * 100,
-            });
-            pool_sizes.push(vk::DescriptorPoolSize {
-                ty: vk::DescriptorType::SAMPLED_IMAGE,
-                descriptor_count: ForwardRenderer::FRAMES_IN_FLIGHT * 100,
-            });
-            pool_sizes.push(vk::DescriptorPoolSize {
-                ty: vk::DescriptorType::SAMPLER,
-                descriptor_count: ForwardRenderer::FRAMES_IN_FLIGHT * 100,
-            });
-
-            let create_info = vk::DescriptorPoolCreateInfo::default()
-                .pool_sizes(&pool_sizes)
-                .max_sets(ForwardRenderer::FRAMES_IN_FLIGHT * (100 + 1));
-
-            gpu.device_context
-                .device
-                .create_descriptor_pool(&create_info, None)
-                .expect("failed to create descriptor pool!")
         }
     }
 
@@ -795,8 +497,6 @@ impl ForwardRenderer {
 impl Drop for ForwardRenderer {
     fn drop(&mut self) {
         unsafe {
-            self.clear_cache();
-
             let device = &self.gpu.device_context.device;
             self.uniform_buffers.iter().for_each(|buffer| {
                 device.destroy_buffer(*buffer, None);
@@ -819,7 +519,6 @@ impl Drop for ForwardRenderer {
             device.destroy_render_pass(self.render_pass, None);
 
             device.destroy_descriptor_set_layout(self.descriptor_set_layout, None);
-            device.destroy_descriptor_pool(self.descriptor_pool, None);
         }
     }
 }

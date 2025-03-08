@@ -1,17 +1,33 @@
 use crate::assets::asset_impl::AssetImpl;
 use crate::assets::{AssetHandle, Texture};
+use crate::renderer::Shading;
+use egui::ahash::{HashMap, HashMapExt};
 
 #[derive(Debug, Clone)]
 pub struct Material {
-    pub def_name: &'static str,
-    pub tex: Option<AssetHandle<Texture>>,
+    pub shading: Shading,
+    props: HashMap<&'static str, Option<AssetHandle<Texture>>>,
 }
 
 impl Material {
-    pub fn new(def_name: &'static str) -> Self {
+    pub fn new(shading: Shading) -> Self {
         Self {
-            def_name,
-            tex: None,
+            shading,
+            props: HashMap::new(),
+        }
+    }
+
+    pub fn set_texture(&mut self, key: &'static str, value: Option<AssetHandle<Texture>>) {
+        self.props.insert(key, value);
+    }
+
+    pub fn get_texture(&mut self, key: &str) -> Option<AssetHandle<Texture>> {
+        match self.props.get(key) {
+            None => None,
+            Some(value) => match value {
+                None => None,
+                Some(tex) => Some(tex.to_owned()),
+            },
         }
     }
 }

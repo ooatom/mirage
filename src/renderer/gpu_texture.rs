@@ -2,6 +2,7 @@ use crate::assets::Texture;
 use crate::gpu::GPU;
 use ash::vk;
 
+#[derive(Debug, Copy, Clone)]
 pub struct GPUTexture {
     pub image: vk::Image,
     pub image_memory: vk::DeviceMemory,
@@ -127,7 +128,7 @@ impl GPUTexture {
         }
     }
 
-    fn drop(&mut self, gpu: &GPU) {
+    pub fn drop(&mut self, gpu: &GPU) {
         unsafe {}
     }
 }

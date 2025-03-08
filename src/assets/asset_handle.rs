@@ -1,24 +1,20 @@
-use std::hash::{Hash, Hasher};
-use std::marker::PhantomData;
 use crate::assets::asset_impl::AssetImpl;
+use std::hash::Hash;
+use std::marker::PhantomData;
 
-#[derive(Debug, Copy, Clone)]
+pub type AssetId = u32;
+
+#[derive(Debug, Copy, Clone, Hash)]
 pub struct AssetHandle<T: AssetImpl> {
-    pub id: u32,
+    pub id: AssetId,
     _phantom: PhantomData<T>,
 }
 
 impl<T: AssetImpl> AssetHandle<T> {
-    pub fn new(id: u32) -> Self {
+    pub fn new(id: AssetId) -> Self {
         Self {
             id,
             _phantom: PhantomData,
         }
-    }
-}
-
-impl<T: AssetImpl> Hash for AssetHandle<T> {
-    fn hash<H: Hasher>(&self, state: &mut H) {
-        self.id.hash(state);
     }
 }

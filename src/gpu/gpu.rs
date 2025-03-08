@@ -11,7 +11,8 @@ pub struct GPU {
     pub device_context: VkDeviceContext,
     pub swap_chain: SwapChain,
 
-    transient_command_pool: vk::CommandPool,
+    pub transient_command_pool: vk::CommandPool,
+    pub descriptor_pool: vk::DescriptorPool,
 }
 
 impl GPU {
@@ -20,12 +21,14 @@ impl GPU {
         let device_context = VkDeviceContext::new(&context);
         let swap_chain = SwapChain::new(&context, &device_context);
         let transient_command_pool = Self::create_command_pools(&device_context);
+        let descriptor_pool = Self::create_descriptor_pool(&device_context);
 
         Self {
             context,
             device_context,
             swap_chain,
             transient_command_pool,
+            descriptor_pool,
         }
     }
 
@@ -55,12 +58,11 @@ impl GPU {
 
     pub fn create_descriptor_sets(
         &self,
-        descriptor_pool: vk::DescriptorPool,
         layouts: &Vec<vk::DescriptorSetLayout>,
     ) -> Vec<vk::DescriptorSet> {
         unsafe {
             let allocate_info = vk::DescriptorSetAllocateInfo::default()
-                .descriptor_pool(descriptor_pool)
+                .descriptor_pool(self.descriptor_pool)
                 .set_layouts(layouts);
 
             let descriptor_sets = self
@@ -591,6 +593,36 @@ impl GPU {
         }
     }
 
+    fn create_descriptor_pool(device: &VkDeviceContext) -> vk::DescriptorPool {
+        unsafe {
+            // todo: VK_KHR_push_descriptor
+
+            let mut pool_sizes: Vec<vk::DescriptorPoolSize> = vec![];
+
+            pool_sizes.push(vk::DescriptorPoolSize {
+                ty: vk::DescriptorType::UNIFORM_BUFFER,
+                descriptor_count: 500,
+            });
+            pool_sizes.push(vk::DescriptorPoolSize {
+                ty: vk::DescriptorType::SAMPLED_IMAGE,
+                descriptor_count: 500,
+            });
+            pool_sizes.push(vk::DescriptorPoolSize {
+                ty: vk::DescriptorType::SAMPLER,
+                descriptor_count: 500,
+            });
+
+            let create_info = vk::DescriptorPoolCreateInfo::default()
+                .pool_sizes(&pool_sizes)
+                .max_sets(500);
+
+            device
+                .device
+                .create_descriptor_pool(&create_info, None)
+                .expect("failed to create descriptor pool!")
+        }
+    }
+
     fn create_command_pools(device: &VkDeviceContext) -> vk::CommandPool {
         // VK_COMMAND_POOL_CREATE_TRANSIENT_BIT:
         //   Hint that command buffers are rerecorded with new commands very often (may change memory allocation behavior)
@@ -681,6 +713,7 @@ impl Drop for GPU {
                 .destroy_swapchain(self.swap_chain.swap_chain.unwrap(), None);
 
             device.destroy_command_pool(self.transient_command_pool, None);
+            device.destroy_descriptor_pool(self.descriptor_pool, None);
 
             device.destroy_device(None);
 

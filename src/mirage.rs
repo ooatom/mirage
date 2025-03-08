@@ -13,6 +13,7 @@ use winit::window::Window;
 pub struct Mirage {
     gpu: Rc<GPU>,
     assets: Rc<RefCell<Assets>>,
+    gpu_assets: Rc<RefCell<GPUAssets>>,
     // pub ui_state: egui_winit::State,
     command_pool: vk::CommandPool,
     command_buffers: Vec<vk::CommandBuffer>,
@@ -31,6 +32,7 @@ impl Mirage {
     pub fn new(window: Rc<Window>) -> Self {
         let gpu = Rc::new(GPU::new(window));
         let assets = Rc::new(RefCell::new(Assets::new()));
+        let gpu_assets = Rc::new(RefCell::new(GPUAssets::new(gpu.clone(), assets.clone())));
         // let egui_context = egui::Context::default();
         // let egui_state = egui_winit::State::new(
         //     egui_context,
@@ -54,6 +56,7 @@ impl Mirage {
         Self {
             gpu,
             assets,
+            gpu_assets,
             // ui_state: egui_state,
             command_pool,
             command_buffers,
@@ -88,7 +91,8 @@ impl Mirage {
         for (transform, static_mesh) in query {
             match (&static_mesh.geom, &static_mesh.material) {
                 (Some(geom), Some(material)) => {
-                    let object = RenderObject::new(geom.clone(), material.clone(), transform.matrix());
+                    let object =
+                        RenderObject::new(geom.clone(), material.clone(), transform.matrix());
                     objects.push(object);
                 }
                 _ => {}
@@ -96,7 +100,7 @@ impl Mirage {
         }
 
         RenderContext {
-            assets: self.assets.clone(),
+            gpu_assets: self.gpu_assets.clone(),
             objects,
         }
     }
@@ -107,11 +111,11 @@ impl Mirage {
         let entity = world.add_entity();
         let mut assets = self.assets.borrow_mut();
         let geom_handle = assets.handle_path::<Geom>("viking_room.obj");
-        let material_handle = assets.handle(Material::new("Simple"));
+        let material_handle = assets.handle(Material::new(Shading::load("simple.spv")));
         let texture_handle = assets.handle_path::<Texture>("texture.jpg");
 
-        let material = assets.load_mut(&material_handle);
-        material.tex = texture_handle;
+        let material = assets.load_mut(&material_handle).unwrap();
+        material.set_texture("texture", texture_handle);
 
         world.add_entity_comp(
             entity,
@@ -127,11 +131,10 @@ impl Mirage {
         );
 
         let entity = world.add_entity();
-        let material_handle = assets.handle(Material::new("Simple"));
+        let material_handle = assets.handle(Material::new(Shading::load("simple.spv")));
         let texture_handle = assets.handle_path::<Texture>("viking_room.png");
-        let material = assets.load_mut(&material_handle);
-
-        material.tex = texture_handle;
+        let material = assets.load_mut(&material_handle).unwrap();
+        material.set_texture("texture", texture_handle);
 
         world.add_entity_comp(
             entity,
@@ -154,8 +157,6 @@ impl Mirage {
         // // self.forward_renderer.projection = Mat4::orthographic_rh(-2.0, 2.0, -2.0, 2.0, 0.01, 100.0);
         self.forward_renderer.projection =
             Mat4::perspective_reversed_z_infinite_rh(PI / 2.0, 1.0, 0.01);
-
-        self.forward_renderer.clear_cache();
     }
 
     pub fn update_window(&self, window: Rc<Window>) {}

@@ -5,7 +5,7 @@ mod geom;
 mod material;
 mod texture;
 
-pub use asset_handle::AssetHandle;
+pub use asset_handle::{AssetHandle, AssetId};
 pub use assets::Assets;
 pub use geom::Geom;
 pub use material::Material;

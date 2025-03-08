@@ -1,5 +1,6 @@
 use crate::assets::*;
 use crate::math::Mat4;
+use crate::renderer::GPUAssets;
 use std::cell::RefCell;
 use std::rc::Rc;
 
@@ -20,6 +21,6 @@ impl RenderObject {
 }
 
 pub struct RenderContext {
-    pub assets: Rc<RefCell<Assets>>,
+    pub gpu_assets: Rc<RefCell<GPUAssets>>,
     pub objects: Vec<RenderObject>,
 }

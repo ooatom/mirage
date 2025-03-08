@@ -2,6 +2,7 @@ use crate::assets::Geom;
 use crate::gpu::GPU;
 use ash::vk;
 
+#[derive(Debug, Copy, Clone)]
 pub struct GPUGeom {
     pub vertex_buffer: vk::Buffer,
     pub vertex_buffer_memory: vk::DeviceMemory,
@@ -26,7 +27,7 @@ impl GPUGeom {
         }
     }
 
-    fn drop(&mut self, gpu: &GPU) {
+    pub fn drop(&mut self, gpu: &GPU) {
         unsafe {
             let device = &gpu.device_context.device;
             device.destroy_buffer(self.vertex_buffer, None);

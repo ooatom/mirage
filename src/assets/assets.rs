@@ -1,4 +1,4 @@
-use super::asset_handle::AssetHandle;
+use super::asset_handle::{AssetHandle, AssetId};
 use super::asset_impl::AssetImpl;
 use super::{AssetBundle, AssetBundle2};
 use egui::ahash::{HashMap, HashMapExt};
@@ -10,7 +10,7 @@ use std::sync::atomic::{AtomicU32, Ordering};
 
 #[derive(Debug)]
 pub struct Assets {
-    pool: HashMap<u32, Box<dyn Any>>,
+    pool: HashMap<AssetId, Box<dyn Any>>,
     // me: Weak<RefCell<Assets>>,
 }
 
@@ -53,18 +53,14 @@ impl Assets {
         AssetHandle::new(id)
     }
 
-    pub fn load<T: AssetImpl>(&self, handle: &AssetHandle<T>) -> &T {
+    pub fn load<T: AssetImpl>(&self, handle: &AssetHandle<T>) -> Option<&T> {
         let asset = self.pool.get(&handle.id).unwrap();
-        asset
-            .downcast_ref::<T>()
-            .expect(&format!("Asset load failed. {:?}", handle.id))
+        asset.downcast_ref::<T>()
     }
 
-    pub fn load_mut<T: AssetImpl>(&mut self, handle: &AssetHandle<T>) -> &mut T {
+    pub fn load_mut<T: AssetImpl>(&mut self, handle: &AssetHandle<T>) -> Option<&mut T> {
         let asset = self.pool.get_mut(&handle.id).unwrap();
-        asset
-            .downcast_mut::<T>()
-            .expect(&format!("Asset load failed. {:?}", handle.id))
+        asset.downcast_mut::<T>()
     }
 
     // pub fn add<T: AssetImpl>(&mut self, key: &'static str, asset: T) -> Rc<AssetHandle<T>> {
