@@ -129,6 +129,12 @@ impl GPUTexture {
     }
 
     pub fn drop(&mut self, gpu: &GPU) {
-        unsafe {}
+        unsafe {
+            let device = &gpu.device_context.device;
+            device.destroy_image(self.image, None);
+            device.destroy_sampler(self.image_sampler, None);
+            device.destroy_image_view(self.image_view, None);
+            device.free_memory(self.image_memory, None);
+        }
     }
 }
