@@ -43,19 +43,15 @@ impl World {
 
     pub fn add_entity_comp<T: Comp>(&mut self, entity: Entity, comp: T) {
         if let Some(index) = self.entity_id_index_map.get(&entity.id) {
+            let index = index.index;
             let id = TypeId::of::<T>();
-            let mut comps = self.components_map.get_mut(&id);
-            if comps.is_none() {
-                let mut data = Vec::<Option<Box<dyn Any>>>::with_capacity(512);
-                unsafe {
-                    data.set_len(512);
-                }
-                self.components_map.insert(id, data);
+            let mut comps = self.components_map.entry(id).or_insert_with(|| {
+                let mut data = Vec::new();
+                data.resize_with(512, || None);
+                data
+            });
 
-                comps = self.components_map.get_mut(&id);
-            }
-
-            comps.unwrap()[index.index] = Some(Box::new(comp));
+            comps[index] = Some(Box::new(comp));
         }
     }
 
@@ -68,43 +64,34 @@ impl World {
         T: Comp,
     {
         let index = self.entity_id_index_map.get(&entity.id)?.index;
-        let id = TypeId::of::<T>();
-        let comp = self.components_map.get(&id)?[index].as_ref()?;
+        let comp = self.get_comps::<T>()?[index].as_ref()?;
         comp.downcast_ref::<T>()
     }
 
     pub fn get_entity_comp_mut<T: Comp>(&mut self, entity: Entity) -> Option<&mut T> {
         let index = self.entity_id_index_map.get(&entity.id)?.index;
-        let id = TypeId::of::<T>();
-        let comp = self.components_map.get_mut(&id)?[index].as_mut()?;
+        let comp = self.get_comps_mut::<T>()?[index].as_mut()?;
         comp.downcast_mut::<T>()
-    }
-
-    pub fn get_comps<T: Comp>(&mut self) -> Option<&Vec<Option<Box<dyn Any>>>> {
-        let id = TypeId::of::<T>();
-        Some(self.components_map.get(&id)?)
-    }
-
-    pub fn get_comps_by_type_id(
-        &mut self,
-        type_id: TypeId,
-    ) -> Option<&mut Vec<Option<Box<dyn Any>>>> {
-        Some(self.components_map.get_mut(&type_id)?)
     }
 
     pub fn has_entity_comp<T: Comp>(&self, entity: Entity) -> bool {
         if let Some(index) = self.entity_id_index_map.get(&entity.id) {
-            let id = TypeId::of::<T>();
-
-            let comps = self.components_map.get(&id);
-            if comps.is_none() {
-                return false;
-            }
-
-            comps.unwrap().get(index.index).is_some()
+            let index = index.index;
+            self.get_comps::<T>()
+                .is_some_and(|comps| comps.get(index).is_some())
         } else {
             false
         }
+    }
+
+    pub fn get_comps<T: Comp>(&self) -> Option<&Vec<Option<Box<dyn Any>>>> {
+        let id = TypeId::of::<T>();
+        self.components_map.get(&id)
+    }
+
+    pub fn get_comps_mut<T: Comp>(&mut self) -> Option<&mut Vec<Option<Box<dyn Any>>>> {
+        let id = TypeId::of::<T>();
+        self.components_map.get_mut(&id)
     }
 
     pub fn dispose(&mut self) {}

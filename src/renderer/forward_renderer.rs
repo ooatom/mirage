@@ -35,9 +35,6 @@ unsafe fn u8_slice_as_any<T>(p: &[u8]) -> &T {
 pub struct ForwardRenderer {
     gpu: Rc<GPU>,
 
-    pub view: Mat4,
-    pub projection: Mat4,
-
     pub render_pass: vk::RenderPass,
     pub descriptor_set_layout: vk::DescriptorSetLayout,
     pub descriptor_sets: Vec<vk::DescriptorSet>,
@@ -108,9 +105,6 @@ impl ForwardRenderer {
             Self {
                 gpu: Rc::clone(gpu),
 
-                view: Mat4::identity(),
-                projection: Mat4::identity(),
-
                 descriptor_set_layout,
                 descriptor_sets,
 
@@ -142,9 +136,9 @@ impl ForwardRenderer {
         unsafe {
             let device = &self.gpu.device_context.device;
             let scene_data = SceneData {
-                view: self.view,
-                projection: self.projection,
-                view_projection: self.projection * self.view,
+                view: context.view,
+                projection: context.projection,
+                view_projection: context.projection * context.view,
             };
             let mut align = ash::util::Align::new(
                 self.uniform_buffer_memories_mapped[frame_index],

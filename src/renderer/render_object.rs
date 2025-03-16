@@ -22,5 +22,7 @@ impl RenderObject {
 
 pub struct RenderContext {
     pub gpu_assets: Rc<RefCell<GPUAssets>>,
+    pub view: Mat4,
+    pub projection: Mat4,
     pub objects: Vec<RenderObject>,
 }

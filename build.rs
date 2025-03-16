@@ -33,7 +33,7 @@ fn get_naga_bin_path() -> Option<PathBuf> {
     if !naga_bin_path.is_file() {
         println!("Naga not founded! Auto install, auto install...`");
         println!("cargo install naga-cli --root . --no-track");
-        Command::new("cargo")
+        let _ = Command::new("cargo")
             .args(&["install", "naga-cli"])
             .args(&["--root", ".", "--no-track"])
             .exec();
@@ -71,7 +71,7 @@ fn main() {
         let output = output_path.to_str().unwrap();
 
         let naga_bin_path = get_naga_bin_path().unwrap();
-        Command::new(&naga_bin_path)
+        let _ = Command::new(&naga_bin_path)
             .args(&[input, output, "--keep-coordinate-space"])
             .exec();
 

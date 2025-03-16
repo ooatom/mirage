@@ -21,7 +21,7 @@ impl Material {
         self.props.insert(key, value);
     }
 
-    pub fn get_texture(&mut self, key: &str) -> Option<AssetHandle<Texture>> {
+    pub fn get_texture(&self, key: &str) -> Option<AssetHandle<Texture>> {
         match self.props.get(key) {
             None => None,
             Some(value) => match value {

@@ -13,9 +13,9 @@ pub struct GPUAssets {
     gpu: Rc<GPU>,
     assets: Rc<RefCell<Assets>>,
 
-    pub pipeline_pool: HashMap<AssetId, HashMap<vk::RenderPass, GPUPipeline>>,
-    pub geom_pool: HashMap<AssetId, GPUGeom>,
-    pub texture_pool: HashMap<AssetId, GPUTexture>,
+    pipeline_pool: RefCell<HashMap<AssetId, HashMap<vk::RenderPass, GPUPipeline>>>,
+    geom_pool: RefCell<HashMap<AssetId, GPUGeom>>,
+    texture_pool: RefCell<HashMap<AssetId, GPUTexture>>,
 }
 
 impl GPUAssets {
@@ -23,38 +23,37 @@ impl GPUAssets {
         GPUAssets {
             gpu,
             assets,
-            pipeline_pool: HashMap::new(),
-            geom_pool: HashMap::new(),
-            texture_pool: HashMap::new(),
+            pipeline_pool: RefCell::new(HashMap::new()),
+            geom_pool: RefCell::new(HashMap::new()),
+            texture_pool: RefCell::new(HashMap::new()),
         }
     }
 
-    pub fn get_texture(&mut self, handle: AssetHandle<Texture>) -> Option<GPUTexture> {
-        match self.texture_pool.get(&handle.id) {
+    pub fn get_texture(&self, handle: AssetHandle<Texture>) -> Option<GPUTexture> {
+        let mut texture_pool = self.texture_pool.borrow_mut();
+        match texture_pool.get(&handle.id) {
             None => {
-                let assets = self.assets.borrow_mut();
+                let assets = self.assets.borrow();
                 let texture = assets.load(&handle)?;
                 let tex_gpu = GPUTexture::new(&self.gpu, &texture);
 
-                self.texture_pool.insert(handle.id, tex_gpu)
+                texture_pool.insert(handle.id, tex_gpu)
             }
             Some(tex) => Some(tex.to_owned()),
         }
     }
 
     pub fn get_pipeline(
-        &mut self,
+        &self,
         handle: &AssetHandle<Material>,
         renderer: &ForwardRenderer,
     ) -> Option<GPUPipeline> {
-        let pipelines = self
-            .pipeline_pool
-            .entry(handle.id)
-            .or_insert(HashMap::new());
+        let mut pipeline_pool = self.pipeline_pool.borrow_mut();
+        let pipelines = pipeline_pool.entry(handle.id).or_insert(HashMap::new());
 
         match pipelines.get(&renderer.render_pass) {
             None => {
-                let assets = self.assets.borrow_mut();
+                let assets = self.assets.borrow();
                 let material = assets.load(&handle)?;
                 let pipeline_gpu = GPUPipeline::new(&self.gpu, &material, renderer);
                 pipelines.insert(renderer.render_pass, pipeline_gpu)
@@ -64,17 +63,15 @@ impl GPUAssets {
     }
 
     pub fn get_material(
-        &mut self,
+        &self,
         handle: &AssetHandle<Material>,
         renderer: &ForwardRenderer,
     ) -> Option<(GPUPipeline, HashMap<&str, Option<GPUTexture>>)> {
-        let pipelines = self
-            .pipeline_pool
-            .entry(handle.id)
-            .or_insert(HashMap::new());
+        let mut pipeline_pool = self.pipeline_pool.borrow_mut();
+        let pipelines = pipeline_pool.entry(handle.id).or_insert(HashMap::new());
 
-        let mut assets = self.assets.borrow_mut();
-        let material = assets.load_mut(&handle)?;
+        let assets = self.assets.borrow();
+        let material = assets.load(&handle)?;
 
         let pipeline = match pipelines.get(&renderer.render_pass) {
             None => {
@@ -86,7 +83,6 @@ impl GPUAssets {
 
         let mut properties = HashMap::new();
         if let Some(value) = material.get_texture("texture") {
-            drop(assets);
             properties.insert("texture", self.get_texture(value));
         }
 
@@ -94,13 +90,14 @@ impl GPUAssets {
     }
 
     pub fn get_geom(&mut self, handle: &AssetHandle<Geom>) -> Option<GPUGeom> {
-        match self.geom_pool.get(&handle.id) {
+        let mut geom_pool = self.geom_pool.borrow_mut();
+        match geom_pool.get(&handle.id) {
             None => {
-                let assets = self.assets.borrow_mut();
+                let assets = self.assets.borrow();
                 let geom = assets.load(&handle)?;
                 let geom_gpu = GPUGeom::new(&self.gpu, geom);
 
-                self.geom_pool.insert(handle.id, geom_gpu)
+                geom_pool.insert(handle.id, geom_gpu)
             }
             Some(geom) => Some(geom.to_owned()),
         }
@@ -109,16 +106,21 @@ impl GPUAssets {
 
 impl Drop for GPUAssets {
     fn drop(&mut self) {
-        self.pipeline_pool.values_mut().for_each(|map| {
-            map.values_mut()
-                .for_each(|pipeline| pipeline.drop(&self.gpu))
-        });
+        self.pipeline_pool
+            .borrow_mut()
+            .values_mut()
+            .for_each(|map| {
+                map.values_mut()
+                    .for_each(|pipeline| pipeline.drop(&self.gpu))
+            });
 
         self.geom_pool
+            .borrow_mut()
             .values_mut()
             .for_each(|geom| geom.drop(&self.gpu));
 
         self.texture_pool
+            .borrow_mut()
             .values_mut()
             .for_each(|tex| tex.drop(&self.gpu));
     }

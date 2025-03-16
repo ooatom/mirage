@@ -2,13 +2,15 @@ use crate::assets::*;
 use crate::gpu::*;
 use crate::math::*;
 use crate::renderer::*;
+use crate::scene::camera::Camera;
 use crate::scene::*;
 use ash::vk;
 use std::cell::{Cell, RefCell};
-use std::f32::consts::PI;
 use std::rc::Rc;
 use std::time::Instant;
 use winit::window::Window;
+use crate::loaders::gltf::load_gltf_scene;
+use crate::loaders::simple::load_simple_scene;
 
 pub struct Mirage {
     gpu: Rc<GPU>,
@@ -75,9 +77,11 @@ impl Mirage {
     pub fn create_scheduler() -> Scheduler {
         let mut scheduler = Scheduler::new();
         scheduler.add_system(|world: &mut World, state: &SystemState| {
-            let query = Query::<&mut Transform>::new(world);
-            for transform in query {
-                transform.rotation = Euler::new(0.0, state.elapsed_time, 0.0);
+            let query = Query::<(&mut Transform, Option<&Camera>)>::new(world);
+            for (transform, camera) in query {
+                if camera.is_none() {
+                    transform.rotation = Euler::new(0.0, state.elapsed_time, 0.0);
+                }
             }
         });
 
@@ -99,64 +103,42 @@ impl Mirage {
             }
         }
 
+        let camera_query = Query::<(&Transform, &Camera)>::new(&mut self.world);
+        let mut view = Mat4::identity();
+        let mut projection = Mat4::identity();
+        for (transform, camera) in camera_query {
+            // let aspect = self.swapchain_properties.extent.width as f32
+            //     / self.swapchain_properties.extent.height as f32;
+            // view = Mat4::look_at_rh(
+            //     Vec3::new(0.0, 10.0, 10.0),
+            //     Vec3::new(0.0, 0.0, 0.0),
+            //     Vec3::new(0.0, 1.0, 0.0),
+            // );
+            view = transform.matrix().invert();
+            // projection = Mat4::orthographic_rh(-2.0, 2.0, -2.0, 2.0, 0.01, 100.0);
+            projection =
+                Mat4::perspective_reversed_z_infinite_rh(camera.fov, camera.aspect, camera.near);
+        }
+
         RenderContext {
             gpu_assets: self.gpu_assets.clone(),
+            view,
+            projection,
             objects,
         }
     }
 
     pub fn load_scene(&mut self, path: &str) {
-        let world = &mut self.world;
-
-        let entity = world.add_entity();
-        let mut assets = self.assets.borrow_mut();
-        let geom_handle = assets.handle_path::<Geom>("viking_room.obj");
-        let material_handle = assets.handle(Material::new(Shading::load("simple.spv")));
-        let texture_handle = assets.handle_path::<Texture>("texture.jpg");
-
-        let material = assets.load_mut(&material_handle).unwrap();
-        material.set_texture("texture", texture_handle);
-
-        world.add_entity_comp(
-            entity,
-            Transform::new(
-                Vec3::new(1.0, 0.0, -0.8),
-                Euler::default(),
-                Vec3::new(2.0, 2.0, 2.0),
-            ),
-        );
-        world.add_entity_comp(
-            entity,
-            StaticMesh::new(geom_handle.clone(), Some(material_handle)),
-        );
-
-        let entity = world.add_entity();
-        let material_handle = assets.handle(Material::new(Shading::load("simple.spv")));
-        let texture_handle = assets.handle_path::<Texture>("viking_room.png");
-        let material = assets.load_mut(&material_handle).unwrap();
-        material.set_texture("texture", texture_handle);
-
-        world.add_entity_comp(
-            entity,
-            Transform::new(
-                Vec3::new(3.0, 0.0, 1.2),
-                Euler::default(),
-                Vec3::new(2.0, 2.0, 2.0),
-            ),
-        );
-
-        world.add_entity_comp(entity, StaticMesh::new(geom_handle, Some(material_handle)));
-
-        // let aspect = self.swapchain_properties.extent.width as f32
-        //     / self.swapchain_properties.extent.height as f32;
-        self.forward_renderer.view = Mat4::look_at_rh(
-            Vec3::new(0.0, 10.0, 10.0),
-            Vec3::new(0.0, 0.0, 0.0),
-            Vec3::new(0.0, 1.0, 0.0),
-        );
-        // // self.forward_renderer.projection = Mat4::orthographic_rh(-2.0, 2.0, -2.0, 2.0, 0.01, 100.0);
-        self.forward_renderer.projection =
-            Mat4::perspective_reversed_z_infinite_rh(PI / 2.0, 1.0, 0.01);
+        match path {
+            "" => {
+                load_simple_scene(&mut self.world, &mut self.assets.borrow_mut());
+            }
+            path if path.ends_with(".gltf") => {
+                load_gltf_scene(&mut self.world, &mut self.assets.borrow_mut(), path);
+            }
+            path if path.ends_with(".usd") => {}
+            _ => {}
+        }
     }
 
     pub fn update_window(&self, window: Rc<Window>) {}
